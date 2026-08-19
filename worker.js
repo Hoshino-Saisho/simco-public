@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sim Companies 聊天存档 · 词频统计
 // @namespace    https://github.com/Hoshino-Saisho/simco-public
-// @version      1.1.0
+// @version      1.2.0
 // @description  在聊天存档页面上统计多个关键词的出现分布：按小时、按天、按发送者、按房间；支持排除词、弱词、自定时区，可导出明细表格
 // @author       —
 // @match        https://simco-chat.cc.cd/*
@@ -47,10 +47,19 @@
   'use strict';
 
   // ------------------------------------------------------------------ 常量
-  var DEFAULT_DAYS = 30;          // 默认统计最近多少天
+  /*
+   * 手机和电脑的阈值不是一个量级 —— 一台手机载入几万条就可能被系统杀掉，
+   * 而电脑上十几万条只是"慢一点"。所以这几个数按屏幕宽度分档，
+   * 而不是全平台用同一个（那样必然对一边太松、对另一边太紧）。
+   */
+  function isNarrow() {
+    try { return (window.innerWidth || 9999) <= 700; } catch (e) { return false; }
+  }
+  function DEFAULT_DAYS() { return isNarrow() ? 7 : 30; }
+  function TABLE_LIMIT() { return isNarrow() ? 150 : 500; }   // 明细表行数（CSV 不受限）
+  function WARN_MSGS() { return isNarrow() ? 20000 : 120000; } // 超过就先问一句
   var FETCH_PARALLEL = 4;         // 同时拉几个日文件（和查看器保持一致）
-  var TABLE_LIMIT = 500;          // 明细表最多显示多少行（导出 CSV 不受限）
-  var WARN_MSGS = 120000;         // 超过这个条数就先提醒一句
+  var NARROW_AT_RENDER = null;    // 上次渲染时是不是窄屏，用来判断要不要重画
 
   /* 房间的中文名。左边的 key 是数据里的房间标识（日文件路径就是 d/<key>/…），
      这张表只管显示。没配的显示 key 本身，将来加新房间也不会开天窗。 */
@@ -539,6 +548,33 @@
     '.scs-legend{display:flex;gap:12px;flex-wrap:wrap;margin-top:10px;font-size:11.5px;color:#8b93a3}',
     '.scs-lg{display:flex;align-items:center;gap:5px}',
     '.scs-lg i{width:9px;height:9px;border-radius:2px;display:inline-block;flex:0 0 auto}',
+
+    /* ---------------- 手机 ---------------- */
+    /* 700px 以下铺满全屏。手机上"悬浮小窗"是最难用的形态：
+       内容挤成一条，还老是误触到底下的页面。 */
+    '@media (max-width:700px){',
+    '  #scs{inset:0;width:100vw;max-height:none;height:100dvh;border-radius:0;',
+    '       border:0;padding:14px 12px calc(14px + env(safe-area-inset-bottom));',
+    '       -webkit-overflow-scrolling:touch}',
+    '  #scs-fab{right:12px;bottom:calc(12px + env(safe-area-inset-bottom));',
+    '           width:48px;height:48px;line-height:48px}',
+    /* 输入框字号 <16px 时某些浏览器会自动放大页面，一放大就再也缩不回去 */
+    '  #scs input[type=text],#scs select{font-size:16px;padding:9px 10px}',
+    '  .scs-row>div{flex:1 1 100%;min-width:0}',
+    '  .scs-btn{padding:9px 14px;font-size:13px}',      /* 手指够得着 */
+    '  .scs-chip{padding:5px 12px;font-size:13px}',
+    '  .scs-opts{gap:10px}',
+    '  .scs-opts label{flex:1 1 100%}',
+    '  .scs-bars{height:100px;gap:2px}',
+    '  .scs-bar{min-width:11px}',                        /* 24 根柱子要能塞进一屏 */
+    '  .scs-bar-n{font-size:9px}',
+    '  .scs-bar-x{font-size:9px}',
+    '  .scs-tw{max-height:none}',                        /* 别做表内滚动，整页滚更好用 */
+    '  #scs table{font-size:12.5px}',
+    '  #scs th,#scs td{padding:6px 4px}',
+    '  #scs td.scs-body{max-width:none}',
+    '  #scs td.scs-t{font-size:11px;white-space:normal}',
+    '}',
     '.scs-bar-fill.scs-peak{background:rgba(125,211,252,.75)}',
     '.scs-bar-n{font-size:9.5px;color:#666e7e;font-variant-numeric:tabular-nums;height:12px}',
     '.scs-bar-x{font-size:9.5px;color:#666e7e;margin-top:3px;white-space:nowrap}',
@@ -555,6 +591,9 @@
     '.scs-term.weak{opacity:.55;text-decoration:line-through;',
     'text-decoration-color:rgba(255,255,255,.4)}',
     '.scs-warn{color:#fbbf24;font-size:11.5px;margin-top:8px}',
+    '#scs td.scs-t{white-space:nowrap;color:#8b93a3;font-variant-numeric:tabular-nums}',
+    '.scs-meta{margin-bottom:3px}',
+    '.scs-tag.room{background:rgba(167,139,250,.16);color:#c4b5fd}',
     '.scs-who{cursor:pointer;border-bottom:1px dashed rgba(255,255,255,.25)}',
     '.scs-who:hover{color:#7dd3fc;border-bottom-color:#7dd3fc}',
     '.scs-note{color:#666e7e;font-size:11.5px;margin-top:8px;line-height:1.5}',
@@ -596,7 +635,7 @@
       .forEach(function (o) {
         var op = el('option', null, o[1]);
         op.value = o[0];
-        if (o[0] === DEFAULT_DAYS) op.selected = true;
+        if (o[0] === DEFAULT_DAYS()) op.selected = true;
         days.appendChild(op);
       });
     c2.appendChild(days);
@@ -763,7 +802,7 @@
       if (!allDays.length) { setMsg('这个范围里没有数据', true); return; }
 
       var total = allDays.reduce(function (a, d) { return a + (d.n || 0); }, 0);
-      if (total > WARN_MSGS &&
+      if (total > WARN_MSGS() &&
           !confirm('将读取 ' + total.toLocaleString() + ' 条消息（' +
                    allDays.length + ' 个文件）。\n数据量较大，可能会卡一会儿。\n\n继续吗？')) {
         return;
@@ -853,6 +892,7 @@
   }
 
   function render(res, terms) {
+    NARROW_AT_RENDER = isNarrow();
     var out = $('#scs-out');
     clear(out);
 
@@ -1017,10 +1057,10 @@
     c4.appendChild(el('h4', null, '发送者排行（前 30）'));
     var tw = el('div', 'scs-tw');
     var t4 = el('table');
+    var narrowS = isNarrow();
     var hr = el('tr');
-    ['#', '公司', '发送者 ID', '条数', '占比'].forEach(function (h) {
-      hr.appendChild(el('th', null, h));
-    });
+    (narrowS ? ['#', '公司', '条数'] : ['#', '公司', '发送者 ID', '条数', '占比'])
+      .forEach(function (h) { hr.appendChild(el('th', null, h)); });
     t4.appendChild(hr);
     res.senders.slice(0, 30).forEach(function (s, i) {
       var tr = el('tr');
@@ -1028,9 +1068,10 @@
       var tdN = el('td');
       tdN.appendChild(who(s.name, s.sid, terms));
       tr.appendChild(tdN);
-      tr.appendChild(el('td', null, s.sid));
-      tr.appendChild(el('td', null, s.n));
-      tr.appendChild(el('td', null, (s.n / res.hit * 100).toFixed(1) + '%'));
+      if (!narrowS) tr.appendChild(el('td', null, s.sid));
+      tr.appendChild(el('td', null, s.n +
+        (narrowS ? '（' + (s.n / res.hit * 100).toFixed(0) + '%）' : '')));
+      if (!narrowS) tr.appendChild(el('td', null, (s.n / res.hit * 100).toFixed(1) + '%'));
       t4.appendChild(tr);
     });
     tw.appendChild(t4);
@@ -1039,30 +1080,46 @@
 
     // ---- 明细 ----
     var c5 = el('div', 'scs-card');
-    var shown = Math.min(res.hits.length, TABLE_LIMIT);
+    var limit = TABLE_LIMIT();
+    var shown = Math.min(res.hits.length, limit);
     c5.appendChild(el('h4', null, '明细（显示最新 ' + shown +
       ' 条，共 ' + res.hits.length + ' 条；导出 CSV 是全量）'));
+    var narrow = isNarrow();
     var tw2 = el('div', 'scs-tw');
     var t5 = el('table');
     var hr2 = el('tr');
-    ['时间', '房间', '公司', '命中', '内容'].forEach(function (h) {
-      hr2.appendChild(el('th', null, h));
-    });
+    // 窄屏只留三列：房间和命中词折进「内容」格里，用小标签显示。
+    // 靠 CSS 隐藏列的话，那两项信息就彻底看不到了 —— 折进去才是真适配。
+    (narrow ? ['时间', '公司', '内容'] : ['时间', '房间', '公司', '命中', '内容'])
+      .forEach(function (h) { hr2.appendChild(el('th', null, h)); });
     t5.appendChild(hr2);
-    res.hits.slice(0, TABLE_LIMIT).forEach(function (h) {
+
+    res.hits.slice(0, limit).forEach(function (h) {
       var tr = el('tr');
-      tr.appendChild(el('td', null, fmtTime(h.m.t)));
-      var tdR = el('td', null, roomLabel(h.m.room));
-      tdR.title = h.m.room;
-      tr.appendChild(tdR);
+      tr.appendChild(el('td', 'scs-t', fmtTime(h.m.t)));
+      if (!narrow) {
+        var tdR = el('td', null, roomLabel(h.m.room));
+        tdR.title = h.m.room;
+        tr.appendChild(tdR);
+      }
       var tdC = el('td');
       tdC.appendChild(who(h.m.name, h.m.sid, terms));
       tr.appendChild(tdC);
-      var tdT = el('td');
-      h.terms.forEach(function (t) { tdT.appendChild(el('span', 'scs-tag', t)); });
-      tr.appendChild(tdT);
-      // 正文一律 textContent —— 绝不 innerHTML
-      tr.appendChild(el('td', 'scs-body', h.m.body));
+      if (!narrow) {
+        var tdT = el('td');
+        h.terms.forEach(function (t) { tdT.appendChild(el('span', 'scs-tag', t)); });
+        tr.appendChild(tdT);
+      }
+      var tdB = el('td', 'scs-body');
+      if (narrow) {
+        var meta = el('div', 'scs-meta');
+        meta.appendChild(el('span', 'scs-tag room', roomLabel(h.m.room)));
+        h.terms.forEach(function (t) { meta.appendChild(el('span', 'scs-tag', t)); });
+        tdB.appendChild(meta);
+      }
+      // 正文一律 textContent / createTextNode —— 绝不 innerHTML
+      tdB.appendChild(document.createTextNode(h.m.body));
+      tr.appendChild(tdB);
       t5.appendChild(tr);
     });
     tw2.appendChild(t5);
@@ -1075,6 +1132,19 @@
     if (document.getElementById('scs-fab')) return;   // 别装两次
     loadTZ();
     buildUI();
+
+    // 转屏或改窗口宽度时，如果跨过了那条 700px 的界线就重画一次 ——
+    // 表格是按宽度决定列数的（不是靠 CSS 藏列），不重画就还是旧的列。
+    var t = null;
+    try {
+      window.addEventListener('resize', function () {
+        if (t) clearTimeout(t);
+        t = setTimeout(function () {
+          if (!SHOWN || NARROW_AT_RENDER === isNarrow()) return;
+          render(SHOWN, (LAST && LAST.termList) || []);
+        }, 200);
+      });
+    } catch (e) { /* 没有 window 就算了（测试环境） */ }
   }
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', boot);
@@ -1082,6 +1152,5 @@
     boot();
   }
 })();
-
 
 
