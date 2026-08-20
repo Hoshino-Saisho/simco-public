@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Sim Companies 聊天存档 · 词频统计
 // @namespace    https://github.com/Hoshino-Saisho/simco-public
-// @version      1.3.1
-// @description  在聊天存档页面上统计多个关键词的出现分布：按小时、按天、按发送者、按房间；支持排除词、弱词、自定时区、产品图标码转名字，可导出明细表格
+// @version      1.7.0
+// @description  在聊天存档页面上统计多个关键词的出现分布：按小时、按天、按发送者、按房间；支持排除词、强词/弱词三档、自定时区、产品图标码转名字，可导出明细表格
 // @author       —
 // @match        https://simco-chat.cc.cd/*
 // @match        https://simco-chat.garden-of-eden.workers.dev/*
@@ -206,7 +206,20 @@
     return out + conv(body.slice(at));
   }
 
-  var CACHE = new Map();          // '房间|日期' -> 消息数组，避免反复拉同一天
+  /*
+   * '房间|日期' -> 【原始 JSON 文本】，避免反复拉同一天。
+   *
+   * ⚠️ 这里存的是文本，不是 expand 之后的消息对象。差别很大：
+   *   五个房间 × 30 天 ≈ 207,000 条
+   *     存文本   约   4.9 MB
+   *     存对象   约 150   MB   ← 差 30 倍
+   * 换句话说，缓存对象的话，光是"为了第二次统计快一点"就要一直占着 150 MB。
+   * 存文本再现场 JSON.parse + expand：parse 一整批只要 126 毫秒，
+   * 而省下来的是 145 MB —— 这笔账怎么算都划算。
+   *
+   * 统计做完之后那批对象就没人引用了，会被回收；缓存里留下的只有文本。
+   */
+  var CACHE = new Map();          // '房间|日期' -> 日文件的原始 JSON 文本
   var INDEX = null;
   /*
    * 快通道（data/recent.json）里的消息，按房间分好。
@@ -242,6 +255,25 @@
    * 弱词是"这个词还要，只是它一个人说了不算"。
    */
   var WEAK = new Set();
+  /*
+   * 强词：这个词【必须】命中，否则整条不算。多个强词是【而且】的关系。
+   *
+   * 三档合起来是一句话：
+   *     必须命中【全部】强词，并且至少命中一个非弱词。
+   *
+   * 场景（就是弱词那个例子再进一步）：搜 1 2 3 4 5，3/4/5 标成弱词之后，
+   * 留下的消息"有 1 或有 2 或都有"。可你要的其实是"必须有 1"——
+   * 把 1 标成强词：每条都必须有 1，可以顺带有 2，而 3/4/5 永远不会单独出现。
+   *
+   * 为什么多个强词是【而且】而不是【或者】：
+   *   如果是"或者"，那把所有非弱词都标成强词，效果和"什么都不标"一模一样——
+   *   这个档位就白加了。「而且」才是弱词做不到的那件事：
+   *   搜 Creator / of / the / Creation，把 of、the 标弱，Creator、Creation 标强，
+   *   得到的就是"两个都出现"的那一批，接近搜一个词组。
+   *
+   * 一个词不能同时是强词和弱词（那是自相矛盾的），切换时会自动互斥。
+   */
+  var STRONG = new Set();
 
   // ------------------------------------------------------------------ 工具
   function el(tag, cls, text) {
@@ -264,6 +296,48 @@
     return fetch(url, noStore ? { cache: 'no-store' } : {}).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
+    });
+  }
+
+  /** 同上，但拿原文 —— 日文件走这条，好把【文本】而不是对象放进缓存。 */
+  function getText(url) {
+    return fetch(url).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.text();
+    });
+  }
+
+  /*
+   * ================== 日文件可能是 gzip 存的（GitHub 那边） ==================
+   *
+   * GitHub Pages 的发布站点有 1 GB 硬上限，数的是文件本体：
+   * 明文 345 MB/年（约 3 年满），gzip 54 MB/年（约 19 年）。
+   * 所以 GitHub 上的日文件是 `.json.gz`。
+   *
+   * Cloudflare 那边不用管：Worker 带 Content-Encoding 返回，浏览器自己解。
+   * GitHub Pages 不认预压缩文件，只能我们自己解。
+   *
+   * 判断依据是索引里的 enc 字段（GitHub 那份写 'gz'）——
+   * ⚠️ 别靠域名猜，换个域名或套个 CDN 就错，而且错法是"静默读不到"。
+   */
+  function encSuffix() {
+    return (INDEX && INDEX.enc === 'gz') ? '.gz' : '';
+  }
+  function canGunzip() {
+    return typeof DecompressionStream !== 'undefined';
+  }
+
+  /** 取一个包的【原文】。压缩的就先解开 —— 返回的永远是 JSON 文本。 */
+  function getPackText(url) {
+    var suf = encSuffix();
+    if (!suf) return getText(url);
+    if (!canGunzip()) {
+      return Promise.reject(new Error(
+        '这个浏览器不支持 gzip 解压（DecompressionStream），读不了压缩存档'));
+    }
+    return fetch(url + suf).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return new Response(r.body.pipeThrough(new DecompressionStream('gzip'))).text();
     });
   }
 
@@ -358,15 +432,17 @@
 
   function loadDay(room, day, onDone) {
     var key = room + '|' + day;
-    if (CACHE.has(key)) return Promise.resolve(CACHE.get(key));
-    return getJSON(dataURL('d/' + encodeURIComponent(room) + '/' +
-                           encodeURIComponent(day) + '.json'))
-      .then(function (pack) {
-        var msgs = expand(pack);
-        CACHE.set(key, msgs);
-        return msgs;
+    if (CACHE.has(key)) {
+      var cached = CACHE.get(key);
+      return Promise.resolve(cached ? expand(JSON.parse(cached)) : []);
+    }
+    return getPackText(dataURL('d/' + encodeURIComponent(room) + '/' +
+                               encodeURIComponent(day) + '.json'))
+      .then(function (txt) {
+        CACHE.set(key, txt);
+        return expand(JSON.parse(txt));
       })
-      .catch(function () { CACHE.set(key, []); return []; });
+      .catch(function () { CACHE.set(key, ''); return []; });
   }
 
   /** 顺序 N 路并发，边拉边报进度，可中断。 */
@@ -438,7 +514,9 @@
 
       hits.push({ m: m, terms: matched });
     }
-    return aggregate(hits, terms, msgs.length, excluded);
+    // analyze 只管"扫正文"，弱词是【看结果时】才切换的，所以这里不传 ——
+    // show() 每次都会带着当前的 WEAK 重新聚合一遍。
+    return aggregate(hits, terms, msgs.length, excluded, null);
   }
 
   /**
@@ -447,7 +525,7 @@
    * 单独拆出来是为了【点某个公司名只看他一个人】—— 那时候不用重新拉数据、
    * 也不用重新扫一遍正文，把已有的命中过滤一下再聚合就行，是瞬时的。
    */
-  function aggregate(hits, terms, scanned, excluded) {
+  function aggregate(hits, terms, scanned, excluded, weak) {
     /*
      * 分布要【分词看】，而且各段必须互不重叠 —— 否则叠起来的总高度会超过
      * 实际命中条数，图就骗人了。
@@ -457,9 +535,26 @@
      *   只命中 bfr      → 归到 "bfr"
      *   两个都命中      → 归到 "同时命中"（单独一类，不重复计入前两类）
      * 这样每根柱子的总高度 = 那个时段真实的命中条数，一分不多一分不少。
-     * 词再多也只有 N+1 类，不会爆炸。
+     *
+     * ⚠️ 归类只看【硬词】，弱词完全不参与。这一条是补的，而且很关键：
+     *
+     * 以前归类看的是全部命中词，于是 "Creator of steel" 因为多命中了一个 of
+     * 就被归进「同时命中 ≥2 个词」。可你把 of 点成弱词，说的就是
+     * "它一个人说了不算" —— 那它当然也不该把一条本质上只命中 Creator 的消息
+     * 抬进"同时命中"那一类。
+     *
+     * 更糟的是另一个后果：弱词自己那一类【必然恒等于 0】。
+     * 因为"只命中这个弱词"的消息在上一步就被过滤掉了，
+     * 剩下的每一条都至少还有一个硬词 —— 于是弱词永远归不到自己名下。
+     * 图上看就是那根柱子一直是零，和"把这个词删掉"长得一模一样。
+     * 这正是"弱词看起来还是排除词"的真正原因。
+     *
+     * 现在：弱词不进堆叠图的类别表（不再画一条恒零的线），
+     * 但它在 perTerm 里【照常计数】—— 它还是搜到了，只是不单独成类。
      */
-    var cats = terms.slice();
+    weak = weak || new Set();
+    var hard = terms.filter(function (t) { return !weak.has(t); });
+    var cats = hard.slice();
     cats.push(MULTI);
 
     var perTerm = {};        // 含这个词的条数（会重叠：同时含两个词的两边都算）
@@ -478,9 +573,15 @@
       var m = h.m;
       h.terms.forEach(function (t) { perTerm[t] = (perTerm[t] || 0) + 1; });
 
-      var cat = h.terms.length > 1 ? MULTI : h.terms[0];
+      // 只用硬词决定归到哪一类；弱词上面已经计过数了，这里不参与
+      var hh2 = [];
+      for (var q = 0; q < h.terms.length; q++) {
+        if (!weak.has(h.terms[q])) hh2.push(h.terms[q]);
+      }
+      var cat = hh2.length > 1 ? MULTI : (hh2.length === 1 ? hh2[0] : null);
+      if (cat === null) return;            // 理论上到不了这里（过滤时已排除）
       onlyTerm[cat] = (onlyTerm[cat] || 0) + 1;
-      if (h.terms.length > 1) combo++;
+      if (hh2.length > 1) combo++;
 
       var hh = hourOf(m.t);
       var dk = dayOf(m.t);
@@ -506,6 +607,7 @@
     return {
       scanned: scanned, hit: sorted.length, combo: combo, excluded: excluded || 0,
       perTerm: perTerm, onlyTerm: onlyTerm, cats: cats,
+      weakList: terms.filter(function (t) { return weak.has(t); }),
       hours: hours, days: days, hoursBy: hoursBy, daysBy: daysBy,
       senders: senderList, rooms: rooms, realms: realms, hits: sorted,
     };
@@ -738,8 +840,27 @@
     '.scs-tag{display:inline-block;font-size:10px;padding:0 5px;border-radius:4px;',
     'background:rgba(125,211,252,.14);color:#7dd3fc;margin-right:3px}',
     '.scs-term{font-variant-numeric:tabular-nums}',
-    '.scs-term.weak{opacity:.55;text-decoration:line-through;',
-    'text-decoration-color:rgba(255,255,255,.4)}',
+    /*
+     * 三档各有自己的颜色，光看颜色就能分开：
+     *   强 = 金（实心感、加粗）      必须有
+     *   普通 = 蓝（和面板主色一致）  可以有
+     *   弱 = 紫（虚线下划线）        有也不单独算数
+     *
+     * ⚠️ 弱词原来是【灰 + 删除线】。那个样子的问题是：删除线在所有界面里
+     * 都表示"已删除/已作废"，正好是弱词最容易被误解的那个意思。
+     * 换成紫色 + 虚线下划线 —— 虚线读作"有条件"，不读作"被划掉了"。
+     */
+    '.scs-term.weak{background:rgba(196,181,253,.14);color:#c4b5fd;',
+    'border-color:rgba(196,181,253,.45);',
+    'text-decoration:underline dashed;text-underline-offset:3px;',
+    'text-decoration-color:rgba(196,181,253,.7)}',
+    '.scs-term.strong{background:rgba(251,191,36,.18);color:#fbbf24;',
+    'border-color:rgba(251,191,36,.5);font-weight:600}',
+    // 图例：一行一档，左边一个和真词条长得一样的小样，右边一句话
+    '.scs-legend{margin-top:10px;display:flex;flex-direction:column;gap:6px}',
+    '.scs-legend div{display:flex;align-items:center;gap:8px;',
+    'color:#8b93a3;font-size:11.5px;line-height:1.4}',
+    '.scs-legend .scs-chip{cursor:default;flex:0 0 auto;min-width:52px;text-align:center}',
     '.scs-warn{color:#fbbf24;font-size:11.5px;margin-top:8px}',
     '#scs td.scs-t{white-space:nowrap;color:#8b93a3;font-variant-numeric:tabular-nums}',
     '.scs-meta{margin-bottom:3px}',
@@ -899,6 +1020,14 @@
       // 顺手拉一次快通道，好让还没进索引的新房间也能被选中。
       // 拉不到就当没有 —— 索引已经到手了，不能因为这一步失败就整个报错。
       return loadRecent().then(function () {
+        // 数据是压缩存的、而这个浏览器解不了 —— 立刻说清楚。
+        // 不然表现是"每天都读不到"，而提示写的是别的原因，会把人带偏。
+        if (encSuffix() === '.gz' && !canGunzip()) {
+          setMsg('这个浏览器不支持 gzip 解压（DecompressionStream），' +
+                 '读不了压缩存档。请换 Chrome / Edge / Safari 16.4+ / ' +
+                 'Firefox 113+ 或更新的版本。', true);
+          return INDEX;
+        }
         renderRooms();
         setMsg('索引就绪：' + INDEX.days.length + ' 个日文件，共 ' +
                (ix.total || 0).toLocaleString() + ' 条' +
@@ -918,8 +1047,14 @@
    * 拉一次快通道。失败一律当作"没有"—— 它只是个补充来源，
    * 不能因为它挂了就把整个统计功能拖down（GitHub 那条线路本来就没有这个文件）。
    */
+  // 同查看器：GitHub 上这个文件必然 404，问一次就够了，别每次开面板都问
+  var HAS_RECENT = null;
+
   function loadRecent() {
-    return getJSON(dataURL('recent.json', true), true).then(function (rec) {
+    if (HAS_RECENT === false) { RECENT = {}; return Promise.resolve(RECENT); }
+    return getPackText(dataURL('recent.json')).then(function (txt) {
+      var rec = JSON.parse(txt);
+      HAS_RECENT = true;
       var out = {};
       ((rec && rec.packs) || []).forEach(function (p) {
         var room = String(p.room || '');
@@ -928,7 +1063,11 @@
       });
       RECENT = out;
       return RECENT;
-    }).catch(function () { RECENT = {}; return RECENT; });
+    }).catch(function () {
+      if (HAS_RECENT === null) HAS_RECENT = false;
+      RECENT = {};
+      return RECENT;
+    });
   }
 
   /** 索引里一天都没有、只在快通道里出现过的房间 —— 刚加的聊天室就是这种。 */
@@ -1034,6 +1173,7 @@
         dayList = [ds[0], ds[ds.length - 1]];
       }
       WEAK = new Set();          // 换了词就重新来过
+      STRONG = new Set();
       SCOPE = {
         rooms: roomList.sort(),
         from: dayList[0], to: dayList[dayList.length - 1],
@@ -1086,15 +1226,35 @@
   function show(terms) {
     if (!LAST) return;
 
-    // 弱词和发送者两道筛选都只是【过滤已有的命中再重新聚合】——
+    // 强词、弱词、发送者三道筛选都只是【过滤已有的命中再重新聚合】——
     // 不重新拉数据、不重新扫正文，所以点一下是瞬时的。
     var kept = LAST.hits;
+
+    // ① 强词：必须【全部】命中。先做这一步，两个数才分得开 ——
+    //    "强词滤掉多少"和"弱词滤掉多少"是调词时的两个独立反馈。
+    var strongDropped = 0;
+    if (STRONG.size) {
+      var beforeS = kept.length;
+      var need = [];
+      STRONG.forEach(function (t) { need.push(t); });
+      kept = kept.filter(function (h) {
+        for (var k = 0; k < need.length; k++) {
+          if (h.terms.indexOf(need[k]) < 0) return false;
+        }
+        return true;
+      });
+      strongDropped = beforeS - kept.length;
+    }
+
+    // ② 弱词：至少要命中一个非弱词。
+    //    （有强词时这一步其实必然通过 —— 强词本身就是非弱词 —— 留着是为了
+    //     只标弱词、不标强词的情形，也为了逻辑写全不留暗坑。）
     var weakDropped = 0;
     if (WEAK.size) {
       var before = kept.length;
       kept = kept.filter(function (h) {
         for (var i = 0; i < h.terms.length; i++) {
-          if (!WEAK.has(h.terms[i])) return true;      // 有一个硬词就留下
+          if (!WEAK.has(h.terms[i])) return true;      // 有一个非弱词就留下
         }
         return false;                                   // 全靠弱词命中的，丢
       });
@@ -1106,8 +1266,9 @@
 
     // 每次都重新聚合，不走"没筛就直接用 LAST"的捷径 ——
     // 换时区时命中集合没变，但小时/按天要重新分桶，走捷径就不会更新。
-    SHOWN = aggregate(kept, terms, LAST.scanned, LAST.excluded);
+    SHOWN = aggregate(kept, terms, LAST.scanned, LAST.excluded, WEAK);
     SHOWN.weakDropped = weakDropped;
+    SHOWN.strongDropped = strongDropped;
 
     render(SHOWN, terms);
     $('#scs-csv').disabled = SHOWN.hits.length === 0;
@@ -1152,11 +1313,12 @@
     // ---- 关键词开关：哪些词「单独出现时不算」 ----
     if (terms.length > 1) {
       var wc = el('div', 'scs-card');
-      wc.appendChild(el('h4', null, '关键词（点一下切换「弱词」）'));
+      wc.appendChild(el('h4', null, '关键词（点一下切换：普通 → 强 → 弱）'));
 
       var wrow = el('div', 'scs-chips');
       terms.forEach(function (t) {
         var weak = WEAK.has(t);
+        var strong = STRONG.has(t);
         // 这个词【单独】能撑起多少条 —— 就是把它设成弱词会掉多少
         var soloN = 0;
         LAST.hits.forEach(function (h) {
@@ -1168,13 +1330,31 @@
           if (hasT && onlyWeakElse) soloN++;
         });
 
-        var chip = el('div', 'scs-chip scs-term' + (weak ? ' weak' : ' on'),
-                      (weak ? '弱 ' : '') + t + '  ' + (LAST.perTerm[t] || 0));
-        chip.title = weak
-          ? '现在是弱词：只靠它命中的不算。点一下改回硬词。'
-          : '点一下设为弱词 —— 只靠它命中的 ' + soloN + ' 条会被去掉';
+        // ⚠️ 这里要用 res（= 筛完之后的 SHOWN），不是 LAST。
+        // 用 LAST 的话，设成弱词之后数字纹丝不动，看起来像"设了没生效"；
+        // 而它真正该显示的是"在留下来的消息里，这个词还命中了多少条" ——
+        // 那个数【不是 0】，正是"弱词不等于排除词"的直接证据。
+        var shownN = res.perTerm[t] || 0;
+        var cls = strong ? ' strong' : (weak ? ' weak' : ' on');
+        var mark = strong ? '强 ' : (weak ? '弱 ' : '');
+        var chip = el('div', 'scs-chip scs-term' + cls, mark + t + '  ' + shownN);
+        chip.title = strong
+          ? '强词：每一条留下来的消息都【必须】含它。\n' +
+            '多个强词是「而且」的关系 —— 全都要命中。\n' +
+            '点一下变成弱词。'
+          : weak
+          ? '弱词：只靠它命中的那些消息已经去掉了。\n' +
+            '留下来的消息里它仍然命中 ' + shownN + ' 条 —— 它还在搜，只是不单独算数。\n' +
+            '点一下变回普通词。'
+          : '普通词：能独立支撑一条消息算数。\n' +
+            '点一下设为强词（每条都必须含它）；再点一下变成弱词' +
+            '（只靠它命中的 ' + soloN + ' 条会被去掉）。';
+        // 三档轮着切：普通 → 强 → 弱 → 普通。
+        // 强和弱是互斥的 —— "必须有它"和"有它也不算数"不可能同时成立。
         chip.onclick = function () {
-          if (WEAK.has(t)) WEAK.delete(t); else WEAK.add(t);
+          if (STRONG.has(t)) { STRONG.delete(t); WEAK.add(t); }
+          else if (WEAK.has(t)) { WEAK.delete(t); }
+          else { STRONG.add(t); }
           show(terms);
           var b = $('#scs');
           if (b) b.scrollTop = 0;
@@ -1183,15 +1363,40 @@
       });
       wc.appendChild(wrow);
 
+      /*
+       * 颜色图例。三个小样和真词条用的是【同一套 class】，
+       * 所以以后改样式不会出现"图例和实际长得不一样"这种最气人的情况。
+       */
+      var lg = el('div', 'scs-legend');
+      [['strong', '强', '每条都【必须】含它。多个强词是「而且」—— 全都要有。'],
+       ['on',     '普通', '有它就算数。可有可无，但能独立支撑一条消息。'],
+       ['weak',   '弱', '还在搜、还计数，但【只靠它命中的不算数】。≠ 排除词。']]
+        .forEach(function (row) {
+          var line = el('div');
+          line.appendChild(el('span', 'scs-chip scs-term ' + row[0], row[1] + ' 词'));
+          line.appendChild(el('span', null, row[2]));
+          lg.appendChild(line);
+        });
+      wc.appendChild(lg);
+
       wc.appendChild(el('div', 'scs-note',
-        '弱词 = 这个词还搜，但【只靠它命中的不算】。' +
-        '一条消息至少要命中一个非弱词才留下。\n' +
-        '比如搜 Creator / of / the / Creation，把 of 和 the 点成弱词：' +
-        '只有 of、只有 the、只有 of+the 的全丢掉，Creator+of 的留下。'));
+        '规则一句话：必须命中【全部强词】，并且至少命中一个【非弱词】。\n' +
+        '例：搜 Creator / of / the / Creation，of 和 the 标弱、Creator 标强 —— ' +
+        '每条都必须有 Creator，可以顺带有 Creation，' +
+        '而只有 of / the 的永远进不来；留下的消息里 of 【照常计入上面的条数】。\n' +
+        '「排除词」是另一回事：那是含了就整条不要，在上面的输入框里填。\n' +
+        '恒为零的类别不画进下面的堆叠图（画出来只会是一条零线，看着像被删了），' +
+        '但总览里的条数照常显示。'));
 
       if (WEAK.size === terms.length) {
         wc.appendChild(el('div', 'scs-warn',
-          '⚠️ 所有词都是弱词了 —— 那就没有任何消息能满足条件。至少留一个硬词。'));
+          '⚠️ 所有词都是弱词了 —— 那就没有任何消息能满足条件。至少留一个非弱词。'));
+      }
+      if (STRONG.size > 1) {
+        wc.appendChild(el('div', 'scs-note',
+          '现在有 ' + STRONG.size + ' 个强词，是【而且】的关系：' +
+          '一条消息要同时含全部 ' + STRONG.size + ' 个才留下。' +
+          (res.hit === 0 ? ' 结果是 0 条，多半就是因为这几个词从来没同时出现过。' : '')));
       }
       out.appendChild(wc);
     }
@@ -1218,6 +1423,10 @@
     if (res.excluded) {
       statRow(c0, '排除词滤掉', res.excluded.toLocaleString() + ' 条');
     }
+    if (res.strongDropped) {
+      statRow(c0, '强词滤掉（没有全部命中强词的）',
+        res.strongDropped.toLocaleString() + ' 条');
+    }
     if (res.weakDropped) {
       statRow(c0, '弱词滤掉（只靠弱词命中的）',
         res.weakDropped.toLocaleString() + ' 条');
@@ -1226,15 +1435,29 @@
       (res.scanned ? '（' + (res.hit / res.scanned * 100).toFixed(2) + '%）' : ''));
     terms.forEach(function (t) {
       var all = res.perTerm[t] || 0, only = res.onlyTerm[t] || 0;
-      statRow(c0, '　含「' + t + '」',
+      var isWeak = WEAK.has(t);
+      var isStrong = STRONG.has(t);
+      statRow(c0, '　含「' + t + '」' + (isStrong ? ' 强' : (isWeak ? ' 弱' : '')),
         all.toLocaleString() + ' 条' +
-        (terms.length > 1 ? '（其中只含它 ' + only.toLocaleString() + ' 条）' : ''));
+        (isStrong
+          // 强词必然出现在每一条里，所以"占比 100%"是废话，写它真正的含义
+          ? '（强词：每条都必须含它，所以就是命中总数）'
+          : isWeak
+          // 弱词【没有】被排除掉，它只是不单独成一类。把这句写死在这里，
+          // 因为"含 of：1 条"旁边如果还写"只含它 0 条"，看起来就像它被删了。
+          ? '（弱词：不单独成类，但在留下的消息里照常计数）'
+          : (terms.length > 1 ? '（其中只含它 ' + only.toLocaleString() + ' 条）' : '')));
     });
     if (terms.length > 1) {
-      statRow(c0, '　同时命中 ≥2 个词', res.combo.toLocaleString() + ' 条');
+      statRow(c0, '　同时命中 ≥2 个' + (WEAK.size ? '硬' : '') + '词',
+        res.combo.toLocaleString() + ' 条');
       c0.appendChild(el('div', 'scs-note',
         '「含」这一列是重叠的（同时含两个词的两边都算），加起来会大于命中条数；' +
-        '下面的图用的是互不重叠的分法。'));
+        '下面的图用的是互不重叠的分法。' +
+        (WEAK.size
+          ? '\n有弱词时，归类只看硬词 —— 一条只命中 Creator 的消息，' +
+            '不会因为顺带含了个 of 就被算成「同时命中 ≥2 个词」。'
+          : '')));
     }
     statRow(c0, '涉及发送者', res.senders.length.toLocaleString() + ' 人');
     out.appendChild(c0);
@@ -1244,11 +1467,25 @@
       return;
     }
 
+    /*
+     * 恒为零的类别不画。
+     *
+     * 这不是美化，是【防误读】：一根一直贴地的柱子和"这个词被删掉了"长得一样。
+     * 什么时候会出现恒零的类别：
+     *   · 标了强词之后 —— 每条都含强词，所以"只含某个普通词"这一类必然是 0
+     *   · 某个词一条都没搜到
+     * 两种情况下那一类都没有任何信息量，画出来只会误导。
+     * 总览里那一行【照常显示】，所以数字不会凭空消失，只是不占图。
+     */
+    var drawCats = res.cats.filter(function (c) { return (res.onlyTerm[c] || 0) > 0; });
+    var hiddenCats = res.cats.filter(function (c) { return !((res.onlyTerm[c] || 0) > 0); });
+    if (!drawCats.length) drawCats = res.cats;      // 兜底：真一个都没有就照旧画
+
     // ---- 按小时（分词堆叠）----
     var hoursX = [];
     for (var hh = 0; hh < 24; hh++) hoursX.push(hh);
     var hoursBy = {};
-    res.cats.forEach(function (c) {
+    drawCats.forEach(function (c) {
       hoursBy[c] = {};
       (res.hoursBy[c] || []).forEach(function (n, i) { if (n) hoursBy[c][i] = n; });
     });
@@ -1257,8 +1494,14 @@
     c1.appendChild(el('h4', null, '按小时分布（' + tzLabel() + '）'));
     var hb = el('div');
     c1.appendChild(hb);
-    stacked(hb, hoursX, res.cats, hoursBy, terms);
-    legend(c1, res.cats, terms, res.onlyTerm);
+    stacked(hb, hoursX, drawCats, hoursBy, terms);
+    legend(c1, drawCats, terms, res.onlyTerm);
+    if (hiddenCats.length) {
+      c1.appendChild(el('div', 'scs-note',
+        '没画：' + hiddenCats.map(catLabel).join('、') +
+        '（这些类别一条都没有 —— 有强词时，"只含某个普通词"必然是 0，' +
+        '因为每条都还含着强词）。总览里的条数不受影响。'));
+    }
     out.appendChild(c1);
 
     // ---- 按天（分词堆叠）----
@@ -1267,8 +1510,8 @@
     c2.appendChild(el('h4', null, '按天分布（' + dayKeys.length + ' 天，' + tzLabel() + '）'));
     var db = el('div');
     c2.appendChild(db);
-    stacked(db, dayKeys, res.cats, res.daysBy, terms, { shortLabel: 5 });
-    legend(c2, res.cats, terms, res.onlyTerm);
+    stacked(db, dayKeys, drawCats, res.daysBy, terms, { shortLabel: 5 });
+    legend(c2, drawCats, terms, res.onlyTerm);
     out.appendChild(c2);
 
     // ---- 房间 / 领域 ----
@@ -1382,4 +1625,3 @@
     boot();
   }
 })();
-
