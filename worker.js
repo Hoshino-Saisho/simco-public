@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sim Companies 聊天存档 · 词频统计
 // @namespace    https://github.com/Hoshino-Saisho/simco-public
-// @version      1.2.0
+// @version      1.2.2
 // @description  在聊天存档页面上统计多个关键词的出现分布：按小时、按天、按发送者、按房间；支持排除词、弱词、自定时区，可导出明细表格
 // @author       —
 // @match        https://simco-chat.cc.cd/*
@@ -63,7 +63,7 @@
 
   /* 房间的中文名。左边的 key 是数据里的房间标识（日文件路径就是 d/<key>/…），
      这张表只管显示。没配的显示 key 本身，将来加新房间也不会开天窗。 */
-  var ROOM_LABEL = { SALES: '交易', SOCIAL: '社交', X: '航天交易' };
+  var ROOM_LABEL = { SALES: '交易', SOCIAL: '社交', X: '航天交易', ENSALES: '英文交易' };
   var MULTI = '\u0000multi';      // 「同时命中 ≥2 个词」这一类的内部键
   var PALETTE = ['#7dd3fc', '#86efac', '#fbbf24', '#f472b6', '#c4b5fd',
                  '#fb923c', '#34d399', '#a5b4fc', '#fda4af', '#fcd34d',
@@ -78,6 +78,21 @@
 
   var CACHE = new Map();          // '房间|日期' -> 消息数组，避免反复拉同一天
   var INDEX = null;
+  /*
+   * 快通道（data/recent.json）里的消息，按房间分好。
+   *
+   * 为什么非要它不可：房间列表原本只从索引（日文件）里推，
+   * 而【刚加的聊天室在整点那次完整发布之前根本没有日文件】——
+   * 于是它压根不出现在房间选择里，你想选都选不到。
+   * ENSALES 刚加上去时就是这个情况，看起来像"插件设置不了这个房间"。
+   *
+   * 存档站的查看器早就靠 recent 解决了同一个问题（indexRooms 会合并它），
+   * 插件这边一直没跟上 —— 这就是那个缺口。
+   *
+   * 只对【索引里一天都没有的房间】用它，所以不会和日文件重复计数。
+   * GitHub Pages 那条线路不生成这个文件，拿不到就当没有，行为退回原样。
+   */
+  var RECENT = {};                // 房间 -> 消息数组（只在没有日文件时才用）
   var ABORT = false;
   var LAST = null;                // 完整结果（未按发送者筛选）
   var SHOWN = null;               // 当前正在看的结果（可能被发送者筛过）—— 导出的是它
@@ -744,26 +759,71 @@
     return getJSON(dataURL('index.json', true), true).then(function (ix) {
       INDEX = ix;
       INDEX.days = (ix.days || []).filter(function (d) { return (d.n || 0) > 0; });
-      renderRooms();
-      setMsg('索引就绪：' + INDEX.days.length + ' 个日文件，共 ' +
-             (ix.total || 0).toLocaleString() + ' 条');
-      return INDEX;
+      // 顺手拉一次快通道，好让还没进索引的新房间也能被选中。
+      // 拉不到就当没有 —— 索引已经到手了，不能因为这一步失败就整个报错。
+      return loadRecent().then(function () {
+        renderRooms();
+        setMsg('索引就绪：' + INDEX.days.length + ' 个日文件，共 ' +
+               (ix.total || 0).toLocaleString() + ' 条' +
+               (recentOnlyRooms().length
+                 ? '；另有 ' + recentOnlyRooms().map(roomLabel).join('、') +
+                   ' 还没生成日文件，先用快通道里的最近一小包'
+                 : ''));
+        return INDEX;
+      });
     }).catch(function (e) {
       setMsg('读不到索引：' + e.message + '（确认这个页面是存档站）', true);
       throw e;
     });
   }
 
+  /**
+   * 拉一次快通道。失败一律当作"没有"—— 它只是个补充来源，
+   * 不能因为它挂了就把整个统计功能拖down（GitHub 那条线路本来就没有这个文件）。
+   */
+  function loadRecent() {
+    return getJSON(dataURL('recent.json', true), true).then(function (rec) {
+      var out = {};
+      ((rec && rec.packs) || []).forEach(function (p) {
+        var room = String(p.room || '');
+        if (!room) return;
+        out[room] = (out[room] || []).concat(expand(p));
+      });
+      RECENT = out;
+      return RECENT;
+    }).catch(function () { RECENT = {}; return RECENT; });
+  }
+
+  /** 索引里一天都没有、只在快通道里出现过的房间 —— 刚加的聊天室就是这种。 */
+  function recentOnlyRooms() {
+    var has = {};
+    ((INDEX && INDEX.days) || []).forEach(function (d) { has[d.room] = 1; });
+    return Object.keys(RECENT).filter(function (r) {
+      return !has[r] && RECENT[r] && RECENT[r].length;
+    }).sort();
+  }
+
   function renderRooms() {
     var box = $('#scs-rooms');
     if (!box) return;
     clear(box);
-    var counts = {};
+    var counts = {}, recentOnly = {};
     INDEX.days.forEach(function (d) { counts[d.room] = (counts[d.room] || 0) + (d.n || 0); });
+    // 还没进索引的房间也要列出来，否则你根本无从选它。
+    // 这是"插件设置不了新房间"那个 bug 的正解 —— 和查看器 indexRooms() 同一条规则。
+    recentOnlyRooms().forEach(function (r) {
+      counts[r] = RECENT[r].length;
+      recentOnly[r] = 1;
+    });
     Object.keys(counts).sort().forEach(function (r) {
       var c = el('div', 'scs-chip' + (picked.has(r) ? ' on' : ''),
-                 roomLabel(r) + ' ' + counts[r].toLocaleString());
-      c.title = r;                    // 悬停看得到原始标识
+                 roomLabel(r) + ' ' + counts[r].toLocaleString() +
+                 (recentOnly[r] ? '（仅最近）' : ''));
+      // 悬停看得到原始标识；新房间还要说清楚这个数字为什么这么小
+      c.title = recentOnly[r]
+        ? r + '：还没生成日文件（新房间要等下一次整点发布），\n' +
+              '现在只有快通道里最近这一小包 —— 选它统计得到的就是这批'
+        : r;
       c.onclick = function () {
         if (picked.has(r)) picked.delete(r); else picked.add(r);
         renderRooms();
@@ -799,9 +859,24 @@
         var cutoff = new Date(Date.now() - nDays * 86400000).toISOString().slice(0, 10);
         allDays = allDays.filter(function (d) { return d.day >= cutoff; });
       }
-      if (!allDays.length) { setMsg('这个范围里没有数据', true); return; }
 
-      var total = allDays.reduce(function (a, d) { return a + (d.n || 0); }, 0);
+      // 还没有日文件的房间：它的消息只在快通道里。不特意带上的话，
+      // 选中它就等于什么都没选 —— 那还是"设置不了这个房间"。
+      // 天数上限不用另外卡：快通道本来就只覆盖最近一个多小时。
+      var roRooms = recentOnlyRooms().filter(function (r) {
+        return !wantRooms || wantRooms.has(r);
+      });
+      var recentMsgs = [];
+      roRooms.forEach(function (r) {
+        RECENT[r].forEach(function (m) { recentMsgs.push(m); });
+      });
+
+      if (!allDays.length && !recentMsgs.length) {
+        setMsg('这个范围里没有数据', true); return;
+      }
+
+      var total = allDays.reduce(function (a, d) { return a + (d.n || 0); }, 0) +
+                  recentMsgs.length;
       if (total > WARN_MSGS() &&
           !confirm('将读取 ' + total.toLocaleString() + ' 条消息（' +
                    allDays.length + ' 个文件）。\n数据量较大，可能会卡一会儿。\n\n继续吗？')) {
@@ -813,12 +888,21 @@
       allDays.forEach(function (d) {
         if (roomList.indexOf(d.room) < 0) roomList.push(d.room);
       });
+      roRooms.forEach(function (r) {
+        if (roomList.indexOf(r) < 0) roomList.push(r);
+      });
+      // 只选了新房间时一个日文件都没有，日期范围就从快通道的消息本身推
+      if (!dayList.length && recentMsgs.length) {
+        var ds = recentMsgs.map(function (m) { return dayOf(m.t); }).sort();
+        dayList = [ds[0], ds[ds.length - 1]];
+      }
       WEAK = new Set();          // 换了词就重新来过
       SCOPE = {
         rooms: roomList.sort(),
         from: dayList[0], to: dayList[dayList.length - 1],
         files: allDays.length, indexTotal: total,
         picked: picked.size > 0, nDays: nDays, exclude: exclude,
+        recentOnly: roRooms.slice(), recentN: recentMsgs.length,
       };
       VIEW_SID = null;
 
@@ -834,6 +918,7 @@
       }).then(function (msgs) {
         if (ABORT) { setMsg('已中断（已读到的会留在缓存里，下次更快）'); return; }
         setMsg('统计中…');
+        for (var k = 0; k < recentMsgs.length; k++) msgs.push(recentMsgs[k]);
         var res = analyze(msgs, terms, {
           caseSensitive: $('#scs-case').checked,
           alsoName: $('#scs-name').checked,
@@ -905,6 +990,14 @@
         SCOPE.rooms.map(roomLabel).join('、'));
       statRow(sc, '日期', SCOPE.from + ' ～ ' + SCOPE.to +
         '（' + SCOPE.files + ' 个日文件）');
+      // 新房间的数字小得吓人是正常的 —— 说清楚，别让人以为又坏了
+      if (SCOPE.recentOnly && SCOPE.recentOnly.length) {
+        sc.appendChild(el('div', 'scs-note',
+          '⏱ ' + SCOPE.recentOnly.map(roomLabel).join('、') +
+          ' 还没生成日文件（新房间要等下一次整点发布），' +
+          '这里只统计了快通道里最近的 ' + SCOPE.recentN.toLocaleString() +
+          ' 条 —— 不是全部历史。'));
+      }
       if (SCOPE.exclude && SCOPE.exclude.length) {
         statRow(sc, '排除词', SCOPE.exclude.join('、'));
       }
@@ -1152,5 +1245,4 @@
     boot();
   }
 })();
-
 
