@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sim Companies 聊天存档 · 词频统计
 // @namespace    https://github.com/Hoshino-Saisho/simco-public
-// @version      1.7.0
+// @version      1.7.1
 // @description  在聊天存档页面上统计多个关键词的出现分布：按小时、按天、按发送者、按房间；支持排除词、强词/弱词三档、自定时区、产品图标码转名字，可导出明细表格
 // @author       —
 // @match        https://simco-chat.cc.cd/*
@@ -10,7 +10,33 @@
 // @grant        none
 // @run-at       document-idle
 // @noframes
+// @homepageURL  https://hoshino-saisho.github.io/simco-public/
+// @supportURL   https://github.com/Hoshino-Saisho/simco-public/issues
+// @downloadURL  https://hoshino-saisho.github.io/simco-public/simco-chat-stats.user.js
+// @updateURL    https://hoshino-saisho.github.io/simco-public/simco-chat-stats.user.js
 // ==/UserScript==
+
+/*
+ * ⚠️ 上面那段 ==UserScript== 头里【只能有 `// @键 值` 这种行】。
+ * 别在里面写普通注释 —— 油猴还能忍，但别的脚本管理器
+ * （Violentmonkey / Greasemonkey）可能直接把整段元数据解析坏，
+ * 表现是"装上了但一点反应都没有"，最难查。解释一律写在外面，就像这里。
+ *
+ * ------------------------- 自动更新是怎么工作的 -------------------------
+ *
+ * @updateURL   油猴定期去下这个文件，【只读上面那段头】，比对 @version
+ * @downloadURL 发现有新版时，从这个地址下完整脚本
+ *
+ * 所以规矩只有一条：**每次改动都必须把 @version 往上加**。
+ * 不加的话，代码发上去了也没有任何人会收到更新提示。
+ *
+ * 为什么地址用 github.io 而不是 raw.githubusercontent.com：
+ * raw 那个域名在国内长期被 DNS 污染，而玩家基本都在国内 ——
+ * github.io 是他们本来就打得开的（存档站就挂在上面）。
+ *
+ * 这两个地址指向的必须是【仓库里那一份】。改完本地文件记得推上去，
+ * 否则版本号涨了、线上还是旧的，别人点更新会拿到和现在一样的东西。
+ */
 
 /*
  * ============================================================================
@@ -327,15 +353,24 @@
     return typeof DecompressionStream !== 'undefined';
   }
 
+  /*
+   * 换格式之前发上去的天还是明文 `.json`，而且不会被自动重发
+   * （发布端只重发"条数变了"的天）。索引一标 enc:'gz'，这些老天就全 404。
+   * 所以 404 就回退到明文，并记住这一天，之后不再多敲一次 404。
+   * ⚠️ 只有 404 回退 —— 断网不能把这一天永久标成明文。
+   */
+  var ENC_PLAIN = {};
+
   /** 取一个包的【原文】。压缩的就先解开 —— 返回的永远是 JSON 文本。 */
   function getPackText(url) {
     var suf = encSuffix();
-    if (!suf) return getText(url);
+    if (!suf || ENC_PLAIN[url]) return getText(url);
     if (!canGunzip()) {
       return Promise.reject(new Error(
         '这个浏览器不支持 gzip 解压（DecompressionStream），读不了压缩存档'));
     }
     return fetch(url + suf).then(function (r) {
+      if (r.status === 404) { ENC_PLAIN[url] = true; return getText(url); }
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return new Response(r.body.pipeThrough(new DecompressionStream('gzip'))).text();
     });
