@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Sim Companies 聊天存档 · 词频统计
 // @namespace    https://github.com/Hoshino-Saisho/simco-public
-// @version      1.2.2
-// @description  在聊天存档页面上统计多个关键词的出现分布：按小时、按天、按发送者、按房间；支持排除词、弱词、自定时区，可导出明细表格
+// @version      1.3.1
+// @description  在聊天存档页面上统计多个关键词的出现分布：按小时、按天、按发送者、按房间；支持排除词、弱词、自定时区、产品图标码转名字，可导出明细表格
 // @author       —
 // @match        https://simco-chat.cc.cd/*
 // @match        https://simco-chat.garden-of-eden.workers.dev/*
@@ -57,7 +57,21 @@
   }
   function DEFAULT_DAYS() { return isNarrow() ? 7 : 30; }
   function TABLE_LIMIT() { return isNarrow() ? 150 : 500; }   // 明细表行数（CSV 不受限）
-  function WARN_MSGS() { return isNarrow() ? 20000 : 120000; } // 超过就先问一句
+  /*
+   * 「量太大了，确定继续吗」的阈值。
+   *
+   * ⚠️ 这两个数原来是 20,000 / 120,000 —— 那是【只有一两个房间】时定的。
+   * 现在五个房间合计约 6,900 条/天，手机默认 7 天就是 48,300 条、
+   * 电脑默认 30 天就是 207,000 条 —— 两边都超，于是每次统计都弹框。
+   * 一个每次都弹的确认框等于没有确认框：人会闭着眼睛点「确定」，
+   * 真正危险的那次也就跟着被点过去了。
+   *
+   * 重新按实测定：一条消息在堆里约 0.43 KB。
+   *   手机  50,000 条 ≈ 22 MB，安全；真正有风险的量级在 30 万条以上
+   *   电脑 250,000 条 ≈ 108 MB，桌面 Chrome 单标签页有 2~4 GB 可用
+   * 这样框只在真的该拦的时候才出现。
+   */
+  function WARN_MSGS() { return isNarrow() ? 50000 : 250000; } // 超过就先问一句
   var FETCH_PARALLEL = 4;         // 同时拉几个日文件（和查看器保持一致）
   var NARROW_AT_RENDER = null;    // 上次渲染时是不是窄屏，用来判断要不要重画
 
@@ -75,6 +89,122 @@
     return PALETTE[(i < 0 ? 0 : i) % PALETTE.length];
   }
   function roomLabel(r) { return ROOM_LABEL[r] || r; }
+
+  /*
+   * ============================ 产品图标码 ============================
+   *
+   * 聊天里的 :re-30: 是游戏内产品图标的 id。这里只把 id 翻成名字，
+   * 不去还原图标：:re-30: → 能源研究
+   *
+   * 这张表和存档站查看器里的是【同一份】，逗号串、下标即 id、0 号占位。
+   * 改一处两处都要改 —— 但这个代价换来的是 1.5 KB 而不是 3 KB 的 JSON。
+   *
+   * 为什么这个功能在统计插件里特别值：
+   *   交易区的报价几乎全是图标码堆出来的（":re-97: 5000 @ 12.3"），
+   *   不翻译的话你只能搜 "re-97"，得先去查 97 是什么。
+   *   翻译之后搜「BFR」和搜「re-97」命中的是同一批消息。
+   *
+   * 空字符串 = 不知道这个 id 的名字（36~39 在原始表里就是 undefined）。
+   * 查不到时【原样显示 :re-36:】，绝不显示空白或 "undefined"。
+   */
+  var PRODUCTS = (',电力,水,苹果,橘子,葡萄,谷物,牛排,香肠,鸡蛋,原油,汽油,柴油,运输单位,矿物,铝土矿,硅材,化合物,铝材,塑料,处理器,电子元件,电池,显示屏,智能手机,平板电脑,笔记本电脑,显示器,电视机,作物研究,能源研究,采矿研究,电器研究,畜牧研究,化学研究,软件,,,,,棉花,棉布,铁矿石,钢材,沙子,玻璃,皮革,车载电脑,电动马达,豪华车内饰,基本内饰,车身,内燃机,经济电动车,豪华电动车,经济燃油车,豪华燃油车,卡车,汽车研究,时装研究,内衣,手套,裙子,高跟鞋,手袋,运动鞋,种子,圣诞爆竹,金矿石,金条,名牌手表,项链,甘蔗,乙醇,甲烷,碳纤维,碳纤复合材,机身,机翼,精密电子元件,飞行计算机,座舱,姿态控制器,火箭燃料,燃料储罐,固体燃料助推器,火箭发动机,隔热板,离子推进器,喷气发动机,亚轨道二级火箭,亚轨道火箭,轨道助推器,星际飞船,BFR,喷气客机,豪华飞机,单引擎飞机,无人机,人造卫星,航空航天研究,钢筋混凝土,砖块,水泥,黏土,石灰石,木材,钢筋,木板,窗户,工具,建筑预构件,推土机,材料研究,机器人,牛,猪,牛奶,咖啡豆,咖啡粉,蔬菜,面包,芝士,苹果派,橙汁,苹果汁,姜汁汽水,披萨,面条,汉堡包,千层面,肉丸,混合果汁,面粉,黄油,糖,可可,面团,酱汁,动物饲料,巧克力,植物油,沙拉,咖喱角,圣诞装饰品,食谱,南瓜,杰克灯笼,女巫服,南瓜汤,树,复活节兔兔,斋月糖果,巧克力冰淇淋,苹果冰淇淋').split(',');
+
+  // 带 /g 的正则；用之前一律先归零 lastIndex，所以可以安全共用一份
+  var RE_ICON = /:[a-z0-9]+(?:-[a-z0-9]+)+:/gi;
+  var RE_URL  = /https?:\/\/[^\s<>"']+/gi;
+
+  /** :re-30: → '能源研究'；认不出来返回空串（调用方负责原样显示）。 */
+  function productName(code) {
+    var m = /^:re-(\d+):$/i.exec(code);
+    if (!m) return '';                       // 别的前缀不翻译，原样留着
+    return PRODUCTS[Number(m[1])] || '';
+  }
+
+  /**
+   * 把正文里所有图标码对应的产品名拼成一串，供检索用。
+   *
+   * 在【读入那一刻】算一次，之后统计还是纯 indexOf ——
+   * 不会因为多了这个功能就让每次搜索都变慢。
+   */
+  function iconNames(body) {
+    if (body.indexOf(':') < 0) return '';    // 绝大多数消息在这里就返回了
+    var out = '';
+    body.replace(RE_ICON, function (m) {
+      var n = productName(m);
+      if (n) out += ' ' + n;
+      return m;
+    });
+    return out;
+  }
+
+  /**
+   * 把正文画进一个格子里：图标码显示成产品名，其余原样。
+   *
+   * ⚠️ 全程 createTextNode / textContent，一个 innerHTML 都没有 ——
+   * 正文是玩家写的，里面可能有 <script>，那只能是普通文字。
+   * 测试里的 DOM 桩会在任何人写 innerHTML 时直接抛异常，这条纪律是被钉死的。
+   */
+  function renderBody(parent, text) {
+    var body = String(text || '');
+    if (body.indexOf(':') < 0) {              // 绝大多数消息走这条捷径
+      parent.appendChild(document.createTextNode(body));
+      return;
+    }
+    // 先把网址整段切出来。https://x.com/a:re-30:b 里那段【不是】图标码，
+    // 不先切就会把网址显示成 "https://x.com/a能源研究b"。查看器也是这个顺序。
+    var segs = [];
+    RE_URL.lastIndex = 0;
+    var at = 0, u;
+    while ((u = RE_URL.exec(body)) !== null) {
+      if (u.index > at) segs.push({ url: false, s: body.slice(at, u.index) });
+      segs.push({ url: true, s: u[0] });
+      at = u.index + u[0].length;
+    }
+    if (at < body.length) segs.push({ url: false, s: body.slice(at) });
+
+    segs.forEach(function (seg) {
+      if (seg.url) { parent.appendChild(document.createTextNode(seg.s)); return; }
+      RE_ICON.lastIndex = 0;
+      var last = 0, m;
+      while ((m = RE_ICON.exec(seg.s)) !== null) {
+        if (m.index > last) {
+          parent.appendChild(document.createTextNode(seg.s.slice(last, m.index)));
+        }
+        var pn = productName(m[0]);
+        if (pn) {
+          var chip = el('span', 'scs-emo', pn);
+          chip.title = m[0];                  // 悬停看得到原始的 :re-30:
+          parent.appendChild(chip);
+        } else {
+          // 认不出来就原样显示原始码 —— 绝不留空、更不能是 undefined
+          parent.appendChild(document.createTextNode(m[0]));
+        }
+        last = m.index + m[0].length;
+      }
+      if (last < seg.s.length) {
+        parent.appendChild(document.createTextNode(seg.s.slice(last)));
+      }
+    });
+  }
+
+  /** 把正文里的图标码换成 [产品名]，给 CSV 用（表格里走 renderBody）。 */
+  function bodyForCSV(body) {
+    if (body.indexOf(':') < 0) return body;
+    RE_URL.lastIndex = 0;
+    var out = '', at = 0, u;
+    var conv = function (t) {
+      RE_ICON.lastIndex = 0;
+      return t.replace(RE_ICON, function (m) {
+        var n = productName(m);
+        return n ? '[' + n + ']' : m;        // 认不出来的原样留着
+      });
+    };
+    while ((u = RE_URL.exec(body)) !== null) {
+      out += conv(body.slice(at, u.index)) + u[0];   // 网址整段原样
+      at = u.index + u[0].length;
+    }
+    return out + conv(body.slice(at));
+  }
 
   var CACHE = new Map();          // '房间|日期' -> 消息数组，避免反复拉同一天
   var INDEX = null;
@@ -217,6 +347,8 @@
         name: String(r[ix.co] || '(未知)'),
         sid: Number(r[ix.sid]) || 0,
         body: String(r[ix.body] || ''),
+        // 图标码对应的产品名，读入时算一次 —— 搜「BFR」和搜「re-97」都能命中
+        icons: iconNames(String(r[ix.body] || '')),
         realm: (Number(r[ix.realm]) || 0) + 1,
         retracted: !!Number(r[ix.ret]),
         deleted: !!Number(r[ix.del]),
@@ -279,7 +411,10 @@
       var m = msgs[i];
       if (opt.skipRemoved && (m.retracted || m.deleted)) continue;
 
-      var hay = opt.caseSensitive ? m.body : m.body.toLowerCase();
+      // 正文 + 图标码翻出来的产品名。原始码也还在正文里，所以
+      // 搜 ":re-97:"、搜 "re-97"、搜 "BFR" 命中的是同一批消息。
+      var raw = m.body + (m.icons || '');
+      var hay = opt.caseSensitive ? raw : raw.toLowerCase();
       if (opt.alsoName) hay += ' ' + (opt.caseSensitive ? m.name : m.name.toLowerCase());
 
       var matched = null;
@@ -494,7 +629,7 @@
       var m = h.m;
       lines.push([
         fmtTime(m.t), m.room, csvCell(m.name), m.sid, 'R' + m.realm,
-        csvCell(h.terms.join(' + ')), csvCell(m.body),
+        csvCell(h.terms.join(' + ')), csvCell(bodyForCSV(m.body)),
       ].join(','));
     });
     return '﻿' + lines.join('\r\n');    // BOM，Excel 打开中文不乱码
@@ -609,6 +744,8 @@
     '#scs td.scs-t{white-space:nowrap;color:#8b93a3;font-variant-numeric:tabular-nums}',
     '.scs-meta{margin-bottom:3px}',
     '.scs-tag.room{background:rgba(167,139,250,.16);color:#c4b5fd}',
+    '.scs-emo{display:inline-block;padding:0 4px;border-radius:4px;',
+    'background:rgba(134,239,172,.13);color:#86efac}',
     '.scs-who{cursor:pointer;border-bottom:1px dashed rgba(255,255,255,.25)}',
     '.scs-who:hover{color:#7dd3fc;border-bottom-color:#7dd3fc}',
     '.scs-note{color:#666e7e;font-size:11.5px;margin-top:8px;line-height:1.5}',
@@ -1211,7 +1348,7 @@
         tdB.appendChild(meta);
       }
       // 正文一律 textContent / createTextNode —— 绝不 innerHTML
-      tdB.appendChild(document.createTextNode(h.m.body));
+      renderBody(tdB, h.m.body);
       tr.appendChild(tdB);
       t5.appendChild(tr);
     });
