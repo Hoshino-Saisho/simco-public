@@ -17,7 +17,7 @@ https://simco-chat.cc.cd/
 这个网页5分钟更新一次，但疑似国内不能连接，推荐给不在国内的人使用
 
 
-worker里的是网页油猴插件，三连接均可使用，需要安装tampermonkey，手机版需要firefox浏览器下载油猴  
+worker.js是网页油猴插件，三连接均可使用，需要安装tampermonkey，手机版需要firefox浏览器下载油猴  
 
 只需复制插件代码即可，我也不知道怎么更新它
 
