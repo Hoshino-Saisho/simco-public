@@ -29,10 +29,11 @@
 
 
 这里的index网站：
+⬇️⬇️⬇️⬇️⬇️⬇️⬇️⬇️⬇️⬇️⬇️⬇️⬇️⬇️
 
 https://hoshino-saisho.github.io/simco-public/ 
 
-⬆️上国内玩家和用户请用这个网页⬆️
+⬆️⬆️⬆️国内玩家和用户请用这个网页⬆️⬆️⬆️
 
 simco-chat.garden-of-eden.workers.dev
 
