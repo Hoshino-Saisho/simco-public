@@ -1,0 +1,3356 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Sim Companies 聊天记录</title>
+<meta name="referrer" content="no-referrer">
+<!--
+  安全策略说明（这是公开页面，所以每一条都有意义）：
+
+  default-src 'none'   默认什么都不许加载
+  connect-src 'self'   只能读同源的静态 JSON。就算页面里出了问题，也无法把
+                       任何东西发到外部域名 —— 数据只能进不能出
+  img-src              只允许游戏头像 CDN、玩家常用的截图图床、data:，别的一律不加载，
+                       避免有人把 logo 字段塞成追踪像素
+  base-uri / form-action 'none'   禁止改写基准地址、禁止任何表单提交
+
+  script-src / style-src 用 'unsafe-inline' 是因为这是单文件页面。真正的
+  XSS 防线不在 CSP，而在渲染层：本页对聊天内容【完全不使用 innerHTML】，
+  一律用 createTextNode 构造，所以消息里就算写满 <script> 也只是普通文字。
+-->
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'none';
+  script-src 'unsafe-inline';
+  style-src 'unsafe-inline';
+  connect-src 'self';
+  img-src https://d1fxy698ilbz6u.cloudfront.net https://snipboard.io https://i.snipboard.io data:;
+  base-uri 'none';
+  form-action 'none';
+  frame-ancestors 'none';
+">
+<style>
+  :root{
+    --bg:#0e1015; --panel:#151821; --panel2:#1b1f2a; --line:rgba(255,255,255,.08);
+    --tx:#e6e9ef; --mut:#8b93a3; --dim:#666e7e; --acc:#7dd3fc; --ok:#86efac;
+    --warn:#fbbf24; --bad:#f87171; --sw:250px;
+    /*
+     * 正文列最宽多少，两档：
+     *   --colmax          正常，880 ≈ 一行 55~70 个汉字，落在好读的区间
+     *   --colmax-compact  紧凑，440 = 正常的一半，录视频用
+     * 改这两个数的时候，**下面那两个断点要跟着改**（= 250 + 这里的数）。
+     */
+    --colmax:880px;
+    --colmax-compact:440px;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;background:var(--bg);color:var(--tx);display:flex;height:100dvh;overflow:hidden;
+    font:14px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB",
+         "Microsoft YaHei","Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    -webkit-text-size-adjust:100%;
+  }
+  ::-webkit-scrollbar{width:9px;height:9px}
+  ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.13);border-radius:5px}
+  ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.22)}
+  ::-webkit-scrollbar-track{background:transparent}
+
+  #side{width:var(--sw);flex:0 0 var(--sw);background:var(--panel);
+        border-right:1px solid var(--line);display:flex;flex-direction:column;
+        overflow-y:auto;overscroll-behavior:contain}
+  #side h1{font-size:14px;margin:0;padding:15px 16px 4px;font-weight:700}
+  #side .tagline{padding:0 16px 12px;font-size:11.5px;color:var(--dim);line-height:1.5}
+  .sec{padding:11px 14px;border-top:1px solid var(--line);flex:0 0 auto}
+  .sec h2{font-size:11px;color:var(--dim);margin:0 0 8px;font-weight:600;
+          letter-spacing:.6px;text-transform:uppercase}
+
+  .btn{padding:6px 12px;background:var(--panel2);color:var(--tx);border:1px solid var(--line);
+       border-radius:6px;cursor:pointer;font-size:12.5px;font-family:inherit}
+  .btn:hover:not(:disabled){border-color:rgba(255,255,255,.28)}
+  .btn:disabled{opacity:.45;cursor:default}
+  .btn.pri{background:rgba(125,211,252,.15);border-color:rgba(125,211,252,.4);color:var(--acc)}
+  .btnrow{display:flex;gap:6px;flex-wrap:wrap}
+  /*
+   * 链接按钮。必须显式给颜色 ——
+   * 页面里没有全局的 a{color}，所以 <a> 会拿浏览器默认的那个深蓝，
+   * 在深色底上又暗又扎眼。第一版就是这么难看的。
+   */
+  .linkbtn{display:inline-block;padding:6px 12px;border-radius:6px;
+           font-size:12.5px;text-decoration:none;cursor:pointer;
+           background:rgba(125,211,252,.15);border:1px solid rgba(125,211,252,.4);
+           color:var(--acc)}
+  .linkbtn:hover{background:rgba(125,211,252,.25);border-color:var(--acc)}
+
+  input[type=search]{width:100%;padding:7px 9px;background:var(--panel2);color:var(--tx);
+    border:1px solid var(--line);border-radius:6px;font-size:13px;font-family:inherit}
+  input:focus{outline:none;border-color:var(--acc)}
+
+  .chips{display:flex;flex-wrap:wrap;gap:5px}
+  .chip{padding:3px 10px;border-radius:999px;background:var(--panel2);border:1px solid var(--line);
+        font-size:12px;cursor:pointer;user-select:none;color:var(--mut)}
+  .chip:hover{border-color:rgba(255,255,255,.25);color:var(--tx)}
+  .chip.on{background:rgba(125,211,252,.16);border-color:var(--acc);color:var(--acc)}
+
+  .rowlist{max-height:220px;overflow-y:auto;margin:0 -4px;overscroll-behavior:contain}
+  .row{display:flex;justify-content:space-between;gap:8px;align-items:center;
+       padding:4px 8px;border-radius:5px;cursor:pointer;font-size:12.5px;color:var(--mut)}
+  .row:hover{background:rgba(255,255,255,.05);color:var(--tx)}
+  .row.on{background:rgba(125,211,252,.14);color:var(--acc)}
+  .row.done{color:var(--ok)}
+  .row .n{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums;flex:0 0 auto}
+  .row .lbl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .stat{display:flex;justify-content:space-between;font-size:12.5px;color:var(--mut);padding:2px 0}
+  .stat b{color:var(--tx);font-weight:600;font-variant-numeric:tabular-nums}
+  .note{font-size:11.5px;color:var(--dim);line-height:1.65;white-space:pre-line}
+  .err{color:var(--bad);font-size:12px;margin-top:6px;word-break:break-word}
+
+  #main{flex:1;display:flex;flex-direction:column;min-width:0}
+  /*
+   * 顶栏钉住。
+   *
+   * 正常情况下它本来就不会滚（#feed 才是滚动的那个），sticky 是空转的。
+   * 加它是为了兜住【部分手机浏览器上整页跟着滚】的情况 ——
+   * 那时候顶栏会被推出屏幕，模式切换和搜索框就再也够不着了，
+   * 而唯一的补救是把整页往回滑，偏偏那时候滑动又被消息流吃掉。
+   */
+  #bar{padding:9px 16px;border-bottom:1px solid var(--line);background:var(--panel);
+       display:flex;gap:10px;align-items:center;flex:0 0 auto;
+       position:sticky;top:0;z-index:12}
+  #bar .title{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #bar .sub{color:var(--dim);font-size:12.5px;white-space:nowrap}
+  #bar .spacer{flex:1}
+  #q{max-width:300px}
+  #burger{display:none;background:none;border:0;color:var(--tx);font-size:19px;cursor:pointer;padding:0 4px}
+
+  /*
+   * ================= 正文列的宽度 + 右边预留的那一栏 =================
+   *
+   * 以前消息是一路铺到屏幕最右边的。在 24 寸以上的显示器上，
+   * 一行聊天能拉到一千多像素宽 —— **眼睛从行尾跳回行首会找不着地方**，
+   * 这是排版上最老的一条经验（一行大约 45~90 个字符最好读）。
+   *
+   * 所以现在是两栏：
+   *
+   *   #col   正文（AI 卡 + 消息流），宽度封顶 --colmax
+   *   #rail  右边那一栏，**现在是空的**，先把地占住
+   *
+   * 为什么现在就把 #rail 建出来、而不是只给 #col 加一个 max-width：
+   * 只加 max-width 的话，以后要往右边放东西还得【改结构】——
+   * 而 #feed 是那个滚动容器，动它最容易把滚动位置、
+   * 「滚到底」那套逻辑一起弄坏。现在把壳搭好，以后只往 #rail 里填内容。
+   *
+   * ⚠️ 刻意【左对齐】，不居中。
+   * 居中的话空白会平分到两边，右边就没有一整条可用的地方了 ——
+   * 而右边正是要留给以后那个东西的。
+   * （真想居中：给 #stage 加 justify-content:center 就行，一行。）
+   *
+   * 窄屏和手机完全不受影响：断点以下 #rail 根本不显示，
+   * #col 也不封顶，和改之前一模一样。
+   *
+   * ---- 两档宽度 ----
+   *
+   *   正常  880  平时看存档。一行 55~70 个汉字，好读
+   *   紧凑  440  **录视频用**。一行短，长消息不会横着拖出画面
+   *
+   * 换档只是给 body 挂一个类 —— 不重排 DOM、不重画消息流，
+   * 所以滚动位置一动不动（一边滚一边找镜头的时候，这一点很关键）。
+   */
+  #stage{flex:1;display:flex;min-height:0;min-width:0}
+  #col{flex:1 1 auto;display:flex;flex-direction:column;min-width:0;min-height:0}
+  #rail{display:none}
+  .railon{display:block;flex:1 1 auto;border-left:1px solid var(--line)}
+
+  /*
+   * ⚠️ 断点必须 = 侧栏 250 + 那一档的正文宽度，**两档各算各的**。
+   *
+   * 这条规矩是量出来的。第一版我给 #rail 写了 min-width:260px、
+   * 断点拍脑袋放在 1240，结果是：
+   *     1239px → 正文 989      （没到断点，不封顶）
+   *     1240px → 正文 730      （rail 硬要 260，反过来把正文挤瘦了）
+   * **窗口拖大一个像素，正文突然瘦一大圈** —— 看着就是个 bug。
+   *
+   * 现在 rail 不设 min-width，只吃"正文封顶之后剩下的"，
+   * 于是断点两侧正文宽度是连续的（879 → 880），拖窗口不会跳。
+   * 代价是刚过断点时 rail 只有几个像素 —— 一条贴着边的细线，不碍事。
+   */
+  /* 正常档：250 + 880 = 1130 → 1140 */
+  @media(min-width:1140px){
+    body:not(.compact) #col{max-width:var(--colmax)}
+    body:not(.compact) #rail{display:block;flex:1 1 auto;
+      border-left:1px solid var(--line)}
+  }
+  /*
+   * 紧凑档：250 + 440 = 690，比手机断点（760）还低 ——
+   * 所以"只要不是手机版式"就一直封顶。
+   * 他说手机暂时不需要这个，所以 760 以下一概不管。
+   */
+  @media(min-width:761px){
+    body.compact #col{max-width:var(--colmax-compact)}
+    body.compact #rail{display:block;flex:1 1 auto;
+      border-left:1px solid var(--line)}
+    /* 列窄了，两边的留白也跟着收一点 —— 440 里省下的 16px 全给正文 */
+    body.compact .msg{padding-left:14px;padding-right:14px}
+    body.compact .daysep{margin-left:14px;margin-right:14px}
+    body.compact #aicard{margin-left:14px;margin-right:14px}
+  }
+  /* 手机上这个开关什么都改不了，就别摆在那儿让人猜 */
+  @media(max-width:760px){ #widthsec{display:none} }
+
+  /*
+   * ==================== 两个模式：聊天记录 / 销售办公室 ====================
+   *
+   * 这两块是【完全独立的两棵 DOM】，只用 body 上一个类切换显示。
+   *
+   * 为什么这么切，而不是把计算器塞进现在的布局里：
+   * 聊天存档这一套（索引、日文件、深搜、滚动到底、房间/日期筛选）
+   * 是这个页面最容易坏、也最难验的部分。计算器和它**一行状态都不共享**、
+   * 一个函数都不调用 —— 计算器写崩了，存档那边照样跑。
+   *
+   * 切模式时会把消息流的滚动位置存下来再还原：display:none 会让
+   * scrollTop 归零，不还原的话每切一次回来都被弹到顶上。
+   */
+  #calc{display:none}
+  body.mode-calc #side,body.mode-calc #main{display:none}
+  body.mode-calc #calc{display:flex;flex-direction:column;flex:1;min-width:0}
+
+  .modetabs{display:flex;border:1px solid var(--line);border-radius:8px;
+    overflow:hidden;flex:0 0 auto}
+  .modetabs button{padding:5px 11px;font-size:12.5px;background:transparent;
+    border:0;color:var(--mut);cursor:pointer;font-family:inherit;white-space:nowrap}
+  .modetabs button+button{border-left:1px solid var(--line)}
+  .modetabs button.on{background:rgba(125,211,252,.16);color:var(--acc);font-weight:600}
+  .modetabs button:hover:not(.on){color:var(--tx)}
+
+  #calcbody{flex:1;overflow-y:auto;overscroll-behavior:contain;
+    padding:16px 16px 60px}
+  .cwrap{max-width:1180px;display:flex;flex-direction:column;gap:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:13px 15px 15px}
+  .card>h3{margin:0 0 3px;font-size:13.5px;font-weight:700;color:var(--tx)}
+  .card>.sub{font-size:11.5px;color:var(--dim);line-height:1.6;margin:0 0 11px}
+  .card .grp{margin-top:14px}
+  .card .grp>h4{margin:0 0 7px;font-size:11px;color:var(--dim);font-weight:600;
+    letter-spacing:.5px;text-transform:uppercase}
+
+  /* 输入格子。数字一律用等宽数位，改一个数字时别的不会跟着抖 */
+  #calc input{width:100%;padding:6px 8px;background:var(--panel2);color:var(--tx);
+    border:1px solid var(--line);border-radius:6px;font-size:13px;font-family:inherit;
+    font-variant-numeric:tabular-nums}
+  #calc input:focus{outline:none;border-color:var(--acc)}
+  /* 数字框右边那对小箭头占地方又容易误点，去掉 */
+  #calc input[type=number]{-moz-appearance:textfield}
+  #calc input[type=number]::-webkit-outer-spin-button,
+  #calc input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+
+  /* auto-fill + 上限 200：字段够宽就好，不要为了填满一行把每个拉到 290 */
+  .fgrid{display:grid;gap:9px;grid-template-columns:repeat(auto-fill,minmax(140px,200px))}
+  .fld{min-width:0}
+  .fld label{display:block;font-size:11px;color:var(--dim);margin-bottom:3px}
+  .fld .hint{font-size:10.5px;color:var(--dim);margin-top:3px;line-height:1.45}
+
+  /* 表格横向能滚 —— 手机上宁可滑，也不要把每一列压成两个字 */
+  .tw{overflow-x:auto;margin:0 -4px;padding:0 4px}
+  #calc table{border-collapse:collapse;width:100%;min-width:640px;font-size:12.5px}
+  #calc th{font-size:10.5px;color:var(--dim);font-weight:600;text-align:right;
+    padding:0 6px 6px;letter-spacing:.3px;white-space:nowrap}
+  #calc th:first-child{text-align:left}
+  #calc td{padding:3px 6px;text-align:right;font-variant-numeric:tabular-nums;
+    color:var(--mut);white-space:nowrap}
+  #calc td:first-child{text-align:left;color:var(--tx)}
+  #calc tbody tr+tr td{border-top:1px solid rgba(255,255,255,.05)}
+  /*
+   * 表格里的输入框给【固定宽度】。
+   * 让它 width:100% 的话，整列会被撑成两三百像素宽，
+   * 一个填 4 的品质框横跨半张卡片，而右边的结果被挤到天边。
+   */
+  #calc td input{width:112px;min-width:0}
+  #calc td.out{color:var(--tx)}
+  /* 输入列左对齐，表头跟着一起 —— 不然标题飘在空档上方，对不上下面的框 */
+  #calc th.i,#calc td.i{text-align:left}
+
+  /* 结果条。时利是这张表唯一真正要看的数，所以给它最大的字号 */
+  .kpis{display:grid;gap:9px;margin-top:13px;
+    grid-template-columns:repeat(auto-fit,minmax(132px,1fr))}
+  .kpi{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
+    padding:8px 10px;min-width:0}
+  .kpi .k{font-size:10.5px;color:var(--dim);letter-spacing:.3px}
+  .kpi .v{font-size:16px;margin-top:2px;font-variant-numeric:tabular-nums;
+    word-break:break-all}
+  .kpi.big .v{font-size:22px;font-weight:700}
+  .kpi.good .v{color:var(--ok)} .kpi.bad .v{color:var(--bad)}
+  .kpi.acc .v{color:var(--acc)}
+
+  /* 行尾那个删除键。做小、做灰，误点的代价是丢一行输入 */
+  .xbtn{width:24px;height:24px;line-height:1;padding:0;border-radius:6px;
+    background:transparent;color:var(--dim);border:1px solid var(--line);
+    cursor:pointer;font-size:14px;font-family:inherit}
+  .xbtn:hover:not(:disabled){border-color:var(--bad);color:var(--bad)}
+  .xbtn:disabled{opacity:.3;cursor:default}
+
+  .cbtn{padding:5px 11px;background:var(--panel2);color:var(--tx);
+    border:1px solid var(--line);border-radius:6px;cursor:pointer;
+    font-size:12.5px;font-family:inherit}
+  .cbtn:hover{border-color:var(--acc);color:var(--acc)}
+  .cbtn.warn:hover{border-color:var(--bad);color:var(--bad)}
+  .crow{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-top:10px}
+
+  /* 说明块。这个计算器的坑全在"这个数到底是什么意思"上，所以话要说满 */
+  .why{font-size:11.5px;color:var(--mut);line-height:1.7;background:var(--panel2);
+    border:1px solid var(--line);border-left:2px solid var(--acc);
+    border-radius:8px;padding:9px 11px;margin-top:12px}
+  .why b{color:var(--tx)}
+  .why.warn{border-left-color:var(--warn)}
+  .why code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;
+    background:rgba(255,255,255,.06);border-radius:3px;padding:0 4px}
+
+  #feed{flex:1;overflow-y:auto;padding:8px 0 60px;overscroll-behavior:contain}
+  .placeholder{height:100%;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;color:var(--dim);gap:10px;text-align:center;padding:24px}
+  .placeholder .big{font-size:44px;opacity:.35}
+
+  .daysep{display:flex;align-items:center;gap:12px;margin:20px 22px 12px;
+          color:var(--dim);font-size:11.5px;letter-spacing:.5px}
+  .daysep::before,.daysep::after{content:'';flex:1;height:1px;background:var(--line)}
+  .daysep span{padding:2px 10px;border-radius:999px;border:1px solid var(--line)}
+
+  .msg{display:flex;gap:11px;padding:3px 22px}
+  .msg:hover{background:rgba(255,255,255,.028)}
+  .msg.first{margin-top:9px}
+  /* 头像本身就是正方形的图，圆形裁切会把四个角的内容切掉 —— 所以按方的显示。
+     4px 只是磨掉锐角，和页面上按钮/输入框的圆角是同一套观感，不改变方形本身。 */
+  .av{width:38px;height:38px;border-radius:4px;flex:0 0 38px;object-fit:cover;
+      background:var(--panel2);margin-top:2px}
+  .av.ph{display:flex;align-items:center;justify-content:center;font-weight:700;
+         font-size:15px;color:#0e1015;letter-spacing:-.5px}
+  .gutter{width:38px;flex:0 0 38px;font-size:10.5px;color:var(--dim);text-align:right;
+          padding-right:2px;opacity:0;line-height:1.7;font-variant-numeric:tabular-nums}
+  .msg:hover .gutter{opacity:1}
+  .content{min-width:0;flex:1}
+  .head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:1px}
+  .who{font-weight:600;font-size:14px;cursor:pointer}
+  .who:hover{text-decoration:underline}
+  .ts{font-size:11.5px;color:var(--dim);font-variant-numeric:tabular-nums}
+  .body{white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
+  .body a{color:var(--acc)}
+
+  .tag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:4px;vertical-align:1px;
+       background:rgba(255,255,255,.09);color:var(--mut);font-weight:600;letter-spacing:.3px}
+  .tag.sup{background:rgba(251,191,36,.17);color:#fcd34d}
+  .tag.mod{background:rgba(248,113,113,.17);color:#fca5a5}
+  .tag.cert{background:rgba(125,211,252,.14);color:var(--acc)}
+  .tag.rm{background:rgba(167,139,250,.16);color:#c4b5fd}
+  /* 领域标签是"背景信息"，不是"值得注意的标记" —— 所以刻意做得比
+     管理/赞助/证书那几个都低调，每条消息都挂着也不会喧宾夺主 */
+  .tag.realm{background:transparent;border:1px solid var(--line);color:var(--dim);font-weight:500}
+  /* 变暗：纯 CSS，不重建 DOM、不触发重排。悬停时恢复，方便临时看清 */
+  .msg.dim{opacity:.45;transition:opacity .12s}
+  .msg.dim:hover{opacity:1}
+  .opt{display:flex;align-items:center;gap:7px;margin-top:9px;font-size:12.5px;
+       color:var(--mut);cursor:pointer;user-select:none}
+  .opt input{accent-color:var(--acc);cursor:pointer;margin:0}
+  .opt.off{opacity:.4;cursor:default}
+  .opt.off input{cursor:default}
+  .mention{color:var(--acc);background:rgba(125,211,252,.12);border-radius:4px;padding:0 3px}
+  .emote{display:inline-block;font-size:11px;padding:0 5px;border-radius:4px;margin:0 1px;
+         background:rgba(255,255,255,.08);color:var(--mut);
+         font-family:ui-monospace,Menlo,Consolas,monospace}
+  mark{background:rgba(251,191,36,.34);color:#fff;border-radius:2px;padding:0 1px}
+  .flags{margin-top:2px;display:flex;gap:5px;flex-wrap:wrap}
+  .flag{font-size:10.5px;padding:1px 7px;border-radius:4px;background:rgba(255,255,255,.07);color:var(--dim)}
+  .flag.pin{background:rgba(251,191,36,.16);color:var(--warn)}
+  .flag.del{background:rgba(248,113,113,.16);color:var(--bad)}
+  .msg.gone .body{opacity:.42;text-decoration:line-through}
+
+  /*
+   * 玩家贴的截图。限高不限宽，避免一张长图把整屏占掉；
+   * 点开是原图。故意不做灯箱 —— 多一层交互，多一处会坏的地方。
+   */
+  /*
+   * 点开看大图。
+   *
+   * 我在上一版注释里写过"故意不做灯箱 —— 多一层交互，多一处会坏的地方"。
+   * 那句话在"图能看清"的前提下才成立；实际有些设备上截图小到读不了字，
+   * 而截图往往就是那条消息的全部内容 —— 看不清等于那条消息没存下来。
+   *
+   * 所以做，但只做两件事：铺满屏幕看，和切到【原始像素】看。
+   * 后者才是真正解决"看不清"的那个 —— 铺满屏幕对一张 1920 宽的截图
+   * 在手机上仍然是缩小的。
+   */
+  #lightbox{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.92);
+    display:flex;align-items:center;justify-content:center;
+    /* dvh：手机浏览器地址栏收起/展开时不会把图裁掉 */
+    height:100dvh;overscroll-behavior:contain}
+  #lightbox[hidden]{display:none}
+  #lightbox .lbstage{max-width:100%;max-height:100%;overflow:auto;
+    -webkit-overflow-scrolling:touch;display:flex;
+    align-items:center;justify-content:center}
+  /* 默认铺满：整张看得见 */
+  #lightbox img{max-width:100vw;max-height:100dvh;object-fit:contain;
+    display:block;cursor:zoom-in}
+  /* 切到原始像素：能读清字，代价是要拖动 */
+  #lightbox.real .lbstage{align-items:flex-start;justify-content:flex-start}
+  #lightbox.real img{max-width:none;max-height:none;width:auto;height:auto;
+    cursor:zoom-out}
+  #lightbox .lbbar{position:absolute;top:0;left:0;right:0;
+    display:flex;gap:10px;align-items:center;
+    padding:calc(env(safe-area-inset-top,0px) + 10px) 14px 10px;
+    background:linear-gradient(180deg,rgba(0,0,0,.6),transparent);
+    font-size:13px;color:#e5e7eb}
+  #lightbox .lbbar .sp{flex:1}
+  #lightbox .lbbtn{min-width:44px;min-height:44px;padding:0 14px;
+    display:inline-flex;align-items:center;justify-content:center;
+    background:rgba(255,255,255,.10);color:#fff;border:1px solid rgba(255,255,255,.28);
+    border-radius:10px;cursor:pointer;font-size:14px;text-decoration:none}
+  #lightbox .lbbtn:hover{background:rgba(255,255,255,.18)}
+  /* 灯箱开着时不让底下的消息流跟着滚 */
+  body.lb{overflow:hidden}
+
+  /*
+   * 玩家资料页。
+   *
+   * 点名字原来是"只看这个人的消息"，那是查存档最常用的动作之一，
+   * 【不能弄丢】。所以这里不是替换它，而是把它包进来 ——
+   * 面板里那个「只看他的消息」按钮就是原来那个功能，只是现在有名字了。
+   */
+  #pcard{position:fixed;inset:0;z-index:70;background:rgba(0,0,0,.75);
+    display:flex;align-items:center;justify-content:center;padding:16px;
+    height:100dvh;overscroll-behavior:contain}
+  #pcard[hidden]{display:none}
+  #pcard .psheet{width:min(540px,100%);max-height:min(86dvh,720px);overflow-y:auto;
+    -webkit-overflow-scrolling:touch;background:var(--panel);color:var(--tx);
+    border:1px solid var(--line);border-radius:14px;
+    box-shadow:0 24px 60px rgba(0,0,0,.55)}
+  #pcard .phead{display:flex;gap:12px;align-items:center;padding:16px 16px 12px;
+    border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel);
+    border-radius:14px 14px 0 0}
+  #pcard .phead .av{width:40px;height:40px;flex:0 0 40px;font-size:16px}
+  #pcard .pname{font-size:16px;font-weight:700;line-height:1.25;
+    word-break:break-word;flex:1;min-width:0}
+  #pcard .pbody{padding:14px 16px 16px}
+  #pcard .pwhen{font-size:12px;color:var(--mut);margin:0 0 12px}
+  #pcard .pwhen.old{color:var(--warn)}
+  #pcard .pnone{font-size:13px;color:var(--mut);background:var(--panel2);
+    border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:0 0 12px;
+    line-height:1.6}
+  #pcard .pgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:8px;margin:0 0 12px}
+  #pcard .pcell{background:var(--panel2);border:1px solid var(--line);
+    border-radius:10px;padding:8px 10px;min-width:0}
+  #pcard .pcell .k{font-size:11px;color:var(--dim);letter-spacing:.4px}
+  #pcard .pcell .v{font-size:14px;margin-top:2px;word-break:break-word}
+  #pcard h3{font-size:11px;color:var(--dim);margin:14px 0 8px;font-weight:600;
+    letter-spacing:.6px;text-transform:uppercase}
+  /* 自我介绍：别人写的自由文本，可能很长也可能一行。
+     给个上限 + 自己滚，不让它把下面的"只看他的消息"挤出屏幕。 */
+  #pcard .pnote{background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+    padding:10px 12px;font-size:13px;line-height:1.65;white-space:pre-wrap;
+    word-break:break-word;max-height:220px;overflow-y:auto}
+  #pcard .pnote a{color:var(--acc)}
+  /* 自我介绍里贴的图（snipboard 那种）。放在滚动框里会被压扁，
+     所以给它单独的尺寸，点开还是走同一个灯箱。 */
+  #pcard .pnote .imgs{margin-top:8px}
+  #pcard .pnote .imgwrap img{max-width:100%;max-height:150px}
+  #pcard .chips{display:flex;flex-wrap:wrap;gap:6px}
+  #pcard .chip{font-size:12px;padding:3px 9px;border-radius:999px;
+    background:var(--panel2);border:1px solid var(--line);color:var(--mut)}
+  #pcard .pbtns{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}
+  #pcard .pbtn{min-height:40px;padding:0 14px;display:inline-flex;align-items:center;
+    justify-content:center;border-radius:10px;cursor:pointer;font-size:14px;
+    background:var(--panel2);color:var(--tx);border:1px solid var(--line)}
+  #pcard .pbtn.main{background:rgba(125,211,252,.14);border-color:rgba(125,211,252,.45);
+    color:var(--acc);font-weight:600}
+  #pcard .pbtn:hover{filter:brightness(1.15)}
+  #pcard .pfoot{font-size:11.5px;color:var(--dim);line-height:1.6;margin-top:14px;
+    border-top:1px solid var(--line);padding-top:10px}
+  /* 手机上铺满，别做成一个够不着的小卡片 */
+  @media(max-width:560px){
+    #pcard{padding:0;align-items:stretch}
+    #pcard .psheet{width:100%;max-height:100dvh;border-radius:0;border:0}
+    #pcard .phead{border-radius:0;
+      padding-top:calc(env(safe-area-inset-top,0px) + 14px)}
+    #pcard .pbody{padding-bottom:calc(env(safe-area-inset-bottom,0px) + 24px)}
+  }
+  body.pc{overflow:hidden}
+
+  .imgs{margin-top:6px;display:flex;flex-wrap:wrap;gap:8px}
+  .imgwrap{display:inline-block;line-height:0;border:1px solid var(--line);
+    border-radius:8px;overflow:hidden;background:var(--panel2)}
+  .imgwrap img{max-width:min(420px,100%);max-height:260px;height:auto;display:block}
+  @media(max-width:860px){.imgwrap img{max-height:200px}}
+
+
+  #deep{display:none;padding:7px 14px;background:var(--panel2);font-size:12px;
+    color:var(--mut);border-bottom:1px solid var(--line);align-items:center;gap:10px;
+    flex-wrap:wrap}
+  #deep.on{display:flex}
+  #deep b{color:var(--tx);font-variant-numeric:tabular-nums}
+  #deep button{padding:3px 10px;font-size:12px;border-radius:6px;cursor:pointer;
+    background:var(--panel);color:var(--tx);border:1px solid var(--line)}
+  #deep button:hover{border-color:var(--acc);color:var(--acc)}
+  /* 错误条里的「重试」—— 只重拉失败的那几天，不用刷新整页 */
+  #err button.retry{padding:2px 10px;font-size:12px;border-radius:6px;cursor:pointer;
+    background:var(--panel);color:var(--tx);border:1px solid var(--line)}
+  #err button.retry:hover{border-color:var(--acc);color:var(--acc)}
+  /*
+   * ============ AI 摘要卡 ============
+   *
+   * 只有一个硬要求：**一眼就知道这段不是人写的。**
+   * 所以它刻意不长得像消息 —— 独立边框、紫色调、顶上一条横幅，
+   * 而且横幅【收不起来】：正文可以折叠，"AI 生成"那几个字折不掉。
+   *
+   * 位置在搜索栏下面、消息流【外面】：消息流默认滚到底，
+   * 摘要要是塞在流的最上面，等于没人看得到。
+   */
+  /*
+   * ⚠️ 这张卡在 #col 这个纵向 flex 里，和 #feed 是兄弟（以前是在 #main 里）。
+   *
+   * 第一版只写了 display:block + overflow:hidden，于是摘要一长就出事：
+   * flex 项默认 flex-shrink:1，卡片被压扁，而 overflow:hidden 把溢出的部分
+   * 【直接切掉】—— 下半段既看不见，也滚不到。
+   * 表现是"AI 总结写着写着就没了"，看起来像模型被截断，其实是 CSS 切的。
+   *
+   * 所以三件事一起做：
+   *   flex:0 0 auto  别让它被 #feed 压扁
+   *   max-height     再长也不许吃掉整个屏幕（下面还有原始记录要看）
+   *   正文自己滚      超出的部分滚得到，而不是被切掉
+   */
+  #aicard{display:none;margin:10px 22px 2px;border:1px solid #7c3aed;border-radius:10px;
+    background:linear-gradient(180deg,rgba(124,58,237,.16),rgba(124,58,237,.05));
+    overflow:hidden}
+  #aicard.on{display:flex;flex-direction:column;flex:0 0 auto;max-height:42vh}
+  /* 横幅和脚注不参与压缩：不管正文多长，"这是 AI 写的"这句话永远在 */
+  #aicard .aihead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex:0 0 auto;
+    padding:7px 12px;background:rgba(124,58,237,.30);
+    border-bottom:1px solid rgba(124,58,237,.55);
+    font-size:12px;font-weight:700;color:#e9d5ff;letter-spacing:.02em}
+  #aicard .aihead .aititle{background:#7c3aed;color:#fff;padding:1px 8px;
+    border-radius:5px;letter-spacing:.06em;font-weight:800}
+  #aicard .aihead .warn{font-weight:400;color:#d8b4fe}
+  #aicard .aihead .warn-short{display:none}   /* 窄屏才用，见下面的 media */
+  #aicard .aihead .spacer{flex:1}
+  #aicard .aitoggle{padding:2px 9px;font-size:11px;border-radius:6px;cursor:pointer;
+    background:transparent;color:#e9d5ff;border:1px solid rgba(233,213,255,.45)}
+  #aicard .aitoggle:hover{border-color:#e9d5ff}
+  #aicard .aitoggle.on{background:rgba(233,213,255,.22);border-color:#e9d5ff}
+
+  /*
+   * 进了选读的那些消息。左边一道紫条 + 很淡的底色。
+   * 【故意做得克制】：它是标注，不是高亮 ——
+   * 做得太抢眼的话，没被标的那些反而变成了"背景"，
+   * 而那些恰恰是读者最该看见的部分。
+   */
+  .msg.picked{background:rgba(124,58,237,.10);
+    box-shadow:inset 3px 0 0 #7c3aed}
+  /* 正文是唯一会滚的部分。overscroll-behavior 防止滚到底之后把下面的消息流也带着滚 */
+  #aicard .aibody{padding:10px 13px;font-size:13.5px;line-height:1.75;color:var(--tx);
+    white-space:pre-wrap;word-break:break-word;
+    flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain}
+  #aicard .aifoot{padding:6px 13px 9px;font-size:11px;color:var(--mut);flex:0 0 auto;
+    display:flex;gap:12px;flex-wrap:wrap;border-top:1px solid rgba(124,58,237,.28)}
+  @media(max-width:860px){
+    #aicard{margin-left:12px;margin-right:12px}
+    /*
+     * 手机上屏幕本来就矮，摘要再占 42% 就没地方看原始记录了。
+     * 而且这里【只是上限】—— 默认是收起的（见 AI_OPEN），
+     * 展开之后最多也就这么高，正文自己滚。
+     */
+    #aicard.on{max-height:30vh}
+    #aicard{margin-top:6px;margin-bottom:0}
+    /* 手机上换成短版免责声明 —— 是换，不是删 */
+    #aicard .aihead .warn-long{display:none}
+    #aicard .aihead .warn-short{display:inline}
+    #aicard .aibody{font-size:13px;line-height:1.7;padding:9px 11px}
+    #aicard .aitoggle{padding:3px 12px}
+  }
+
+  #more{margin:16px auto 40px;display:block;padding:8px 20px;background:var(--panel2);
+        color:var(--mut);border:1px solid var(--line);border-radius:7px;cursor:pointer;font-size:13px}
+  #scrim{display:none}
+
+  @media(max-width:760px){
+    #side{position:fixed;left:0;top:0;bottom:0;z-index:30;transform:translateX(-100%);
+          transition:transform .22s ease;box-shadow:0 0 40px rgba(0,0,0,.6)}
+    body.nav #side{transform:none}
+    body.nav #scrim{display:block;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:20}
+    #burger{display:block}
+    #q{max-width:none;flex:1}
+    #bar .sub,#bar .title{display:none}
+    .msg{padding-left:12px;padding-right:12px}
+    .daysep{margin-left:12px;margin-right:12px}
+  }
+</style>
+</head>
+<body>
+<div id="scrim"></div>
+<div id="lightbox" hidden></div>
+<div id="pcard" hidden></div>
+
+<div id="side">
+  <h1>Sim Companies 聊天记录</h1>
+  <div class="tagline">公开只读存档 · 数据为静态文件，页面不会把任何东西传回去<br>（计算器的输入只存在你自己的浏览器里）</div>
+
+  <div class="sec">
+    <h2>载入</h2>
+    <div class="btnrow" style="margin-bottom:8px">
+      <button class="btn pri" id="b_refresh">刷新</button>
+      <button class="btn" id="b_recent">最近 7 天</button>
+      <button class="btn" id="b_all">全部</button>
+    </div>
+    <div class="note" id="info">正在读取索引…</div>
+    <div class="err" id="err"></div>
+  </div>
+
+  <!--
+    工具区放在【靠上】的位置：原来那行链接挂在侧栏最底下，
+    发送者列表一长就被挤到看不见的地方 —— 等于没有。
+    这里在房间/日期/发送者之前，任何时候都在视野里。
+  -->
+  <div class="sec" id="tools" style="display:none">
+    <h2>工具</h2>
+    <div id="toolrow"></div>
+  </div>
+
+  <!--
+    正文列宽。手机上这一段是藏起来的（那边本来就没有多余的横向空间）。
+    紧凑那一档是给录视频用的：一行短，长消息不会横着拖出画面。
+  -->
+  <div class="sec" id="widthsec">
+    <h2>显示</h2>
+    <div class="chips" id="widthchips"></div>
+    <div class="note" id="widthnote"></div>
+  </div>
+
+  <div class="sec"><h2>房间</h2><div class="chips" id="rooms"></div></div>
+  <div class="sec"><h2>日期</h2><div class="rowlist" id="files"></div></div>
+  <div class="sec">
+    <h2>领域</h2>
+    <div class="chips" id="realms"></div>
+    <label class="opt" id="dimwrap">
+      <input type="checkbox" id="dimother" checked>
+      <span>显示其他领域（变暗）</span>
+    </label>
+  </div>
+  <div class="sec">
+    <h2>发送者</h2>
+    <input type="search" id="qs" placeholder="筛选发送者…" style="margin-bottom:7px">
+    <div class="rowlist" id="senders"></div>
+  </div>
+  <div class="sec"><h2>统计</h2><div id="stats"></div></div>
+
+  <div style="flex:1"></div>
+  <div class="sec note" id="about"></div>
+</div>
+
+<div id="main">
+  <div id="bar">
+    <button id="burger" aria-label="菜单">☰</button>
+    <div class="modetabs" id="modetabs1"></div>
+    <span class="title" id="btitle">聊天记录</span>
+    <span class="sub" id="bsub"></span>
+    <span class="spacer"></span>
+    <input type="search" id="q" placeholder="搜索消息内容…">
+  </div>
+  <div id="deep"></div>
+  <!--
+    正文列 + 右边预留的那一栏。
+    #col 里面的东西（AI 卡、消息流）宽度受 --colmax 限制；
+    #rail 现在是空的，宽屏时把右边那块地占住，以后往里放东西不用再动结构。
+  -->
+  <div id="stage">
+    <div id="col">
+      <div id="aicard"></div>
+      <div id="feed">
+        <div class="placeholder"><div class="big">💬</div><div>正在载入…</div></div>
+      </div>
+    </div>
+    <aside id="rail" aria-hidden="true"></aside>
+  </div>
+</div>
+
+<!--
+  销售办公室计算器。和上面那套聊天存档【完全分开】：
+  自己的 DOM、自己的偏好键、不调用存档那边任何函数。
+-->
+<div id="calc">
+  <div id="bar">
+    <div class="modetabs" id="modetabs2"></div>
+    <div class="modetabs" id="calctabs"></div>
+    <span class="spacer"></span>
+    <button class="cbtn" id="c_reset">清空</button>
+  </div>
+  <div id="calcbody"><div class="cwrap" id="cwrap"></div></div>
+</div>
+
+<script>
+(function () {
+'use strict';
+
+// 数据目录（相对路径 = 同源，配合 CSP 的 connect-src 'self'）
+var DATA = './data';
+
+/*
+ * 页面自己的版本号。构建时由 cloudflare/build.js 按整份 HTML 的内容算出来，
+ * 两个部署上都显示在侧栏底部。
+ *
+ * 为什么需要它：**CF 的页面和 GitHub 的页面是分两条路更新的** ——
+ * CF 那份嵌在 worker.js 里（贴 worker 就更新了），
+ * GitHub 那份是仓库里一个独立的 index.html（得单独传）。
+ * 只更新一边的话，两个站会长期不一致，**而且从外观上根本看不出来** ——
+ * 你会以为某个功能没做，其实只是那一边的页面是旧的。
+ *
+ * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
+ */
+var PAGE_BUILD = 'da31b0461014';
+
+// 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
+var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
+
+/*
+ * 房间的中文名。
+ *
+ * 左边这些 key 是数据的一部分（日文件路径就是 d/<key>/日期.json），改不得；
+ * 这张表只管【显示】。访客看到的是「航天交易」而不是一个孤零零的 X。
+ * 没配的房间就显示 key 本身 —— 加了新房间也不会开天窗。
+ */
+var ROOM_LABEL = {
+  ZH:      '游戏',
+  SALES:   '交易',
+  SOCIAL:  '社交',
+  X:       '航天交易',
+  ENSALES: '英文交易',
+};
+function roomLabel(r) { return ROOM_LABEL[r] || r; }
+
+/*
+ * 侧栏「工具」里那个「词频统计插件」的入口。
+ *
+ * 放在页面里是因为：会用到词频统计的人本来就已经在这个页面上了。
+ *
+ * ⚠️ 这里【必须写死绝对地址】，不能相对当前站点拼。
+ *
+ * 我第一版就是相对拼的，理由是"有人 fork 一份，链接指向他自己那份"。
+ * 那个理由是错的，而且后果很难看：
+ *   插件文件只存在于 GitHub Pages 上，Cloudflare 那边【根本没有这个文件】
+ *   （Worker 只服务白名单里的几个路径）。于是在 CF 站点上点这个链接，
+ *   会跳到一个不存在的 .user.js 地址 —— 而油猴看到 .user.js 结尾就会去接管，
+ *   接管失败之后浏览器报 ERR_INVALID_RESPONSE，还会反复重试，表现成"疯狂刷新"。
+ *
+ * 教训：一个链接指向哪里，取决于【文件真正在哪】，不取决于用户现在在哪。
+ * 这个地址和插件头里的 @downloadURL 是同一个 —— 两处必须一致。
+ */
+var STATS_USERSCRIPT =
+  'https://hoshino-saisho.github.io/simco-public/simco-chat-stats.user.js';
+
+function addStatsLink(box) {
+  /*
+   * 整个包在 try 里：这只是一个可有可无的入口，
+   * 它坏掉【绝对不能】把整个侧栏/页面一起拖垮。
+   * （写第一版时就栽在这儿：某些环境里连 location 都没有，
+   *   一个 ReferenceError 直接让开页渲染中断，页面全空。）
+   */
+  try {
+    var a = el('a', 'linkbtn', '📊 词频统计插件');
+    a.href = STATS_USERSCRIPT;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.title = '在这个存档站上做多关键词的词频统计。\n' +
+              '需要先装油猴（Tampermonkey），然后点这里安装；之后有新版会自动提示。';
+    box.appendChild(a);
+    var tip = el('div', 'note', '需要先装油猴（Tampermonkey）');
+    tip.style.marginTop = '6px';
+    box.appendChild(tip);
+    return true;
+  } catch (e) { return false; }   // 有更好，没有也不影响看存档
+}
+
+/** 侧栏「工具」那一节：没东西可放就整节不显示，不留一个空壳。 */
+function renderTools() {
+  try {
+    var row = $('#toolrow');
+    var sec = $('#tools');
+    if (!row || !sec) return;
+    clear(row);
+    if (addStatsLink(row)) sec.style.display = '';
+  } catch (e) { /* 同上，不能因为它挂了就影响别的 */ }
+}
+
+/*
+ * ============================ 产品图标码 ============================
+ *
+ * 聊天里经常出现 :re-30: 这种东西 —— 那是游戏内产品图标的 id。
+ * 我们不去还原图标，只把 id 翻译成产品名字：:re-30: → 能源研究
+ *
+ * ⚠️ 只在【显示时】翻译，存档里存的永远是原始码。这一条很重要：
+ *   · 表一改，几十万条历史消息的显示立刻全部更新，不用重发任何日文件
+ *   · 翻错了能改回来 —— 采集时就替换的话，原始 id 永久丢失
+ *   · 发布链路（日文件/索引/KV/GitHub/归档）一个字都不用动
+ *
+ * 表用逗号串存，下标就是 id（0 号是占位）。产品名里没有逗号，实测过。
+ * 这样比 JSON 对象小一半：1.5 KB。
+ *
+ * 空字符串 = 这个 id 我们不知道名字（36~39 在原始表格里就是 undefined）。
+ * 查不到时【原样显示 :re-36:】，绝不显示空白、更不能显示 "undefined"。
+ */
+var PRODUCTS = (',电力,水,苹果,橘子,葡萄,谷物,牛排,香肠,鸡蛋,原油,汽油,柴油,运输单位,矿物,铝土矿,硅材,化合物,铝材,塑料,处理器,电子元件,电池,显示屏,智能手机,平板电脑,笔记本电脑,显示器,电视机,作物研究,能源研究,采矿研究,电器研究,畜牧研究,化学研究,软件,,,,,棉花,棉布,铁矿石,钢材,沙子,玻璃,皮革,车载电脑,电动马达,豪华车内饰,基本内饰,车身,内燃机,经济电动车,豪华电动车,经济燃油车,豪华燃油车,卡车,汽车研究,时装研究,内衣,手套,裙子,高跟鞋,手袋,运动鞋,种子,圣诞爆竹,金矿石,金条,名牌手表,项链,甘蔗,乙醇,甲烷,碳纤维,碳纤复合材,机身,机翼,精密电子元件,飞行计算机,座舱,姿态控制器,火箭燃料,燃料储罐,固体燃料助推器,火箭发动机,隔热板,离子推进器,喷气发动机,亚轨道二级火箭,亚轨道火箭,轨道助推器,星际飞船,BFR,喷气客机,豪华飞机,单引擎飞机,无人机,人造卫星,航空航天研究,钢筋混凝土,砖块,水泥,黏土,石灰石,木材,钢筋,木板,窗户,工具,建筑预构件,推土机,材料研究,机器人,牛,猪,牛奶,咖啡豆,咖啡粉,蔬菜,面包,芝士,苹果派,橙汁,苹果汁,姜汁汽水,披萨,面条,汉堡包,千层面,肉丸,混合果汁,面粉,黄油,糖,可可,面团,酱汁,动物饲料,巧克力,植物油,沙拉,咖喱角,圣诞装饰品,食谱,南瓜,杰克灯笼,女巫服,南瓜汤,树,复活节兔兔,斋月糖果,巧克力冰淇淋,苹果冰淇淋').split(',');
+
+// 图标码的形状。splitBy 和下面的 replace 都会先把 lastIndex 归零，
+// 所以这个带 /g 的正则可以安全共用一份。
+var RE_ICON = /:[a-z0-9]+(?:-[a-z0-9]+)+:/gi;
+
+/** :re-30: → '能源研究'；认不出来就返回空串（调用方负责原样显示）。 */
+function productName(code) {
+  var m = /^:re-(\d+):$/i.exec(code);
+  if (!m) return '';                       // 别的前缀不翻译，原样留着
+  return PRODUCTS[Number(m[1])] || '';
+}
+
+/**
+ * 把正文里所有图标码对应的产品名拼成一串，给检索用。
+ *
+ * 在【载入时】算一次，之后搜索是纯 indexOf，零额外开销 ——
+ * 和 _s / _d 那两个预算字段是同一个思路。
+ * 这样搜「能源研究」和搜「re-30」都能找到同一条消息。
+ */
+function iconNames(body) {
+  if (body.indexOf(':') < 0) return '';    // 绝大多数消息在这里就返回了
+  var out = '';
+  body.replace(RE_ICON, function (m) {
+    var n = productName(m);
+    if (n) out += ' ' + n;
+    return m;
+  });
+  return out;
+}
+
+var ALL = new Map();          // id -> msg
+var SORTED = [];              // 同样这些消息，按时间排好；只在载入新数据时重建
+var STATS = null;             // 侧栏统计缓存，搜索时直接复用
+var DIRTY = true;             // 载入过新数据、SORTED 需要重建吗
+var LOADED = new Map();       // '房间|日期' -> { got: 已载入条数, gen: 当时的索引版本 }
+
+// 这一天需要（重新）拉吗？没载过要拉；载过但索引说变多了也要拉 ——
+// 但同一版索引下只试一次，免得索引和文件对不上时无限重拉。
+function needLoad(d) {
+  var v = LOADED.get(d.room + '|' + d.day);
+  if (!v) return true;
+  if (v.got >= (d.n || 0)) return false;
+  return v.gen !== (INDEX && INDEX.generated);
+}
+var INDEX = null;
+var view = [], limit = 400;
+var BYROOM = {};
+// 快通道那一小包里出现过哪些房间（房间 → 那一包里的条数）
+var RECENT_ROOMS = {};
+// 访客的选择存在本地，每台设备各存各的，不上传任何东西。
+// 隐私模式下 localStorage 可能直接抛异常，所以读写都包起来，失败就当没存过。
+var PREF = (function () {
+  try { return JSON.parse(localStorage.getItem('simco.pref') || '{}') || {}; }
+  catch (e) { return {}; }
+})();
+function savePref() {
+  try {
+    localStorage.setItem('simco.pref',
+      JSON.stringify({ realm: sel.realm, dim: sel.dimOthers, room: sel.room,
+                       w: sel.width, mode: sel.mode, ct: sel.calcTab }));
+  } catch (e) { /* 存不了就算了，不影响使用 */ }
+}
+
+/*
+ * 正文列宽：normal（880）/ compact（440）。
+ *
+ * 紧凑那一档是给【录视频】用的：一行短，长消息不会横着拖出画面，
+ * 整段对话在画面里占的横向空间小得多，剪辑时好放。
+ * 平时看存档用正常那一档 —— 一行 440 读起来是偏窄的。
+ *
+ * 实现只有一件事：**给 body 挂个类，改一个 CSS 变量。**
+ * 不重排 DOM、不重画消息流 —— 换档时滚动位置一动不动，
+ * 这在"一边滚一边找镜头"的时候很重要。
+ */
+function applyWidth() {
+  try {
+    document.body.classList.toggle('compact', sel.width === 'compact');
+  } catch (e) { /* 老浏览器 toggle 不支持第二个参数也不至于崩 */ }
+}
+
+var sel = {
+  /*
+   * 房间是【单选】，而且永远有一个被选中（默认 ZH）。
+   *
+   * 以前是多选 Set + 一个跨房间的日期筛选，两个搅在一起会锁死：
+   * 点某个日期文件会顺手把房间也钉住，而「全部已载入」只清日期不清房间 ——
+   * 于是另外两个房间的消息明明已经在内存里，却怎么点都出不来。
+   * 现在改成"先选房间，再在这个房间里选日期"，日期列表也只列当前房间的，
+   * 从结构上就不会串。
+   */
+  room: (typeof PREF.room === 'string' && PREF.room) ? PREF.room : 'ZH',
+  day: null, sender: null, q: '',
+  // null = 全部；否则是给人看的领域编号（1 = R1）。默认优先看 R1。
+  realm: (PREF.realm === null || typeof PREF.realm === 'number') ? PREF.realm : 1,
+  // 开 = 其他领域变暗但仍显示；关 = 直接不显示
+  dimOthers: PREF.dim !== false,
+  // 正文列宽：'normal'（默认，880）/ 'compact'（440，录视频用）
+  width: PREF.w === 'compact' ? 'compact' : 'normal',
+  // 哪个模式：'chat'（聊天存档，默认）/ 'calc'（计算器）
+  mode: PREF.mode === 'calc' ? 'calc' : 'chat',
+  // 计算器里面那一层：'office'（销售办公室，默认）/ 'contract'（合同，还没做）
+  calcTab: PREF.ct === 'contract' ? 'contract' : 'office',
+};
+
+/**
+ * 领域这一项现在是不是【筛选】？
+ *
+ * 只有"选了某个领域，且关掉了显示其他"时才算。默认的"变暗"模式下它不参与
+ * 筛选 —— 那些消息本来就要显示出来，只是暗一点，纯 CSS 就够了。
+ * 这也让"什么都没筛时零拷贝"那条捷径在默认状态下依然生效。
+ */
+function realmHides() { return sel.realm != null && !sel.dimOthers; }
+
+var $ = function (s) { return document.querySelector(s); };
+var $$ = function (s) { return document.querySelectorAll(s); };
+
+// ---------- 建元素：全部走 textContent / createTextNode，绝不 innerHTML ----------
+function el(tag, cls, text) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = String(text);
+  return e;
+}
+function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+
+// ---------- 载入 ----------
+function expand(pack) {
+  var cols = pack.cols || [], out = [];
+  var ix = {};
+  cols.forEach(function (c, i) { ix[c] = i; });
+  (pack.rows || []).forEach(function (r) {
+    var d = new Date(r[ix.dt]);
+    var t = isNaN(d) ? 0 : d.getTime();
+    var name = String(r[ix.co] || '(未知)');
+    var body = String(r[ix.body] || '');
+    out.push({
+      id: Number(r[ix.id]) || 0,
+      room: String(pack.room || ''),
+      t: t,
+      name: name,
+      sid: Number(r[ix.sid]) || 0,
+      body: body,
+      cert: Number(r[ix.cert]) || 0,
+      sup: !!Number(r[ix.sup]), mod: !!Number(r[ix.mod]),
+      realm: Number(r[ix.realm]) || 0,
+      logo: String(r[ix.logo] || ''),
+      pinned: !!Number(r[ix.pin]), retracted: !!Number(r[ix.ret]), deleted: !!Number(r[ix.del]),
+
+      // 下面两个只在载入时算一次。
+      // 以前是每敲一个搜索字符就对每条消息重算一遍 toLowerCase + new Date，
+      // 二十万条数据时，光这两样每次按键就要两百多毫秒（手机上是这个的好几倍）。
+      // 检索串里带上图标码翻译后的产品名，所以搜「能源研究」也能找到 :re-30:
+      _s: (body + ' ' + name + iconNames(body)).toLowerCase(),
+      _d: t ? dayOf(t) : '',                   // 本地日期，形如 2026-08-17
+
+      // 游戏返回的 realmId 是从 0 开始编号的：0 是 R1、1 是 R2。
+      // 这里存的是给人看的编号，渲染和筛选一律用它，免得到处 +1 出错。
+      // 不写死只认 0/1 —— 以后加了 R3 会自动多出一个筛选按钮。
+      _r: (Number(r[ix.realm]) || 0) + 1,
+    });
+  });
+  return out;
+}
+
+function addAll(list) {
+  var n = 0;
+  list.forEach(function (m) { if (m.id && !ALL.has(m.id)) { ALL.set(m.id, m); n++; } });
+  if (n) DIRTY = true;        // 有新数据了，排序和统计下次用之前重建
+  return n;
+}
+
+/*
+ * 加时间戳绕开缓存。GitHub Pages 走 CDN，默认会缓存约 10 分钟，
+ * 不带这个参数的话刚发布的内容要等很久才看得到。
+ *
+ * reuse=true 则【不加】时间戳、也不禁用缓存 —— 给深搜用。
+ * 理由：深搜翻的是过去的日子，那些日文件写完就再也不变了。
+ * 每次都强制重下的话，同一个词搜第二遍就要把几十个文件重新拉一遍；
+ * 让浏览器缓存接住之后，第二遍几乎是瞬时的。
+ * 代价只是"今天这个文件可能拿到几分钟前的版本"——
+ * 而今天的数据本来就在内存里（开页就载了），深搜会直接跳过它。
+ */
+/*
+ * ===================== 每个请求都必须有超时 =====================
+ *
+ * 线上反馈（国内用户，GitHub 部署）：点房间没反应，"载入中 0/3 …" 一直挂着。
+ *
+ * 根子是 `fetch` **默认没有超时**。国内访问 github.io 常见的失败样子
+ * 不是"报错"而是**连接被黑洞掉、一直挂着** —— 于是那个 promise
+ * 永远不 settle：
+ *
+ *   · 进度停在 0/N，永远不动
+ *   · `.catch` 不会被调用 ⇒ 一个错误提示都没有
+ *   · switchRoom 里 `.then(refresh)` 永远等不到 ⇒ **整个界面像是点坏了**
+ *
+ * 「一直转」比「报错」难查得多：报错至少告诉你去看网络。
+ * 所以这里给每个请求套一个 AbortController + 超时闹钟，
+ * **宁可早早失败，也不要无限等待**。
+ */
+/*
+ * 单个文件等多久算超时。这个数两边都有代价：
+ *   太短 → 网络只是慢（弱信号拉 45 KB 的 gz）也会被判死
+ *   太长 → 线路整个不通时，你得盯着"载入中"干等
+ * 20 秒是慢速移动网络下大部分日文件拉得完的量级。
+ * 真正防"干等一整批"的不是这个数，是下面那条【连着超时就放弃】。
+ */
+var NET_TIMEOUT_MS = 20000;
+var NET_GIVEUP = 3;              // 连着几个超时就不再拉这一批剩下的
+
+function fetchT(url, opt) {
+  var ctl = null;
+  try { ctl = new AbortController(); } catch (e) { ctl = null; }
+  var o = {};
+  for (var k in (opt || {})) o[k] = opt[k];
+  if (ctl) o.signal = ctl.signal;
+
+  var timer = null;
+  var p = new Promise(function (resolve, reject) {
+    timer = setTimeout(function () {
+      if (ctl) { try { ctl.abort(); } catch (e) {} }
+      // 打一个记号，上层好把"超时"和"404"分开说 —— 这两件事的处理完全不同
+      var err = new Error('超时：' + url);
+      err.timeout = true;
+      reject(err);
+    }, NET_TIMEOUT_MS);
+    fetch(url, o).then(resolve, function (e) {
+      if (e && e.name === 'AbortError') { e.timeout = true; }
+      reject(e);
+    });
+  });
+  return p.then(function (r) { clearTimeout(timer); return r; },
+                function (e) { clearTimeout(timer); throw e; });
+}
+
+function getJSON(path, reuse) {
+  var url = reuse ? path
+                  : path + (path.indexOf('?') < 0 ? '?' : '&') + '_=' + Date.now();
+  return fetchT(url, reuse ? {} : { cache: 'no-store' }).then(function (r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status + '：' + path);
+    return r.json();
+  });
+}
+
+/*
+ * ===================== 日文件可能是 gzip 存的 =====================
+ *
+ * GitHub Pages 的发布站点有 1 GB 硬上限，数的是文件本体。
+ * 存明文 345 MB/年（约 3 年满），存 gzip 54 MB/年（约 19 年）。
+ * 所以 GitHub 那边的日文件是 `.json.gz`。
+ *
+ * Cloudflare 那边【不需要】这一套：Worker 会带 Content-Encoding: gzip 返回，
+ * 浏览器自己就解了，前端拿到的和以前一模一样。
+ * GitHub Pages 不认预压缩文件（这个需求 2019 年提的，至今没做），
+ * `.gz` 对它就是个普通二进制，只能我们自己解。
+ *
+ * 怎么知道该不该解：看索引里的 enc 字段，GitHub 那份写着 'gz'。
+ * ⚠️ 【绝对不要靠域名判断】—— 换域名、套 CDN、本地起个静态服务器，猜法立刻就错，
+ * 而且错的表现是"页面一片空白"，最难查。
+ */
+function encSuffix() {
+  return (INDEX && INDEX.enc === 'gz') ? '.gz' : '';
+}
+
+/** 这个浏览器解得了 gzip 吗？解不了要明说，不能静默失败。 */
+function canGunzip() {
+  return typeof DecompressionStream !== 'undefined';
+}
+
+/*
+ * 拿到索引之后立刻判一次：数据是压缩存的，而这个浏览器解不了 —— 直接说清楚。
+ *
+ * 不做这一步的话，表现是每个日文件都"读取失败"，
+ * 而那句提示写的是"可能还没发布"—— 把人往完全错误的方向带。
+ * 宁可一句难听的实话，也不要一句好听的错话。
+ */
+function encReady() {
+  if (encSuffix() !== '.gz' || canGunzip()) return true;
+  setInfo('');
+  setErr('这个浏览器不支持 gzip 解压（DecompressionStream），读不了压缩存档。' +
+         '请换 Chrome / Edge / Safari 16.4+ / Firefox 113+ 或更新的版本。');
+  emptyState('🧯', '浏览器太老，打不开这份存档',
+             '存档是压缩存的，需要浏览器支持 DecompressionStream');
+  return false;
+}
+
+/*
+ * 换格式之前发上去的那些天还是明文 `.json`，而且【它们不会被自动重发】——
+ * 发布端只重发"条数和上次不一样"的天，已经发完的天永远不会再动。
+ * 索引一旦标上 enc:'gz'，这些老天就会全部 404。
+ *
+ * 所以这里留一条退路：要 .gz 拿到 404，就改要明文，并把这一天记下来，
+ * 下次直接走明文，不再多敲一次 404。
+ *
+ * ⚠️ 只有 404 才回退。断网、超时之类【不能】把这一天永久标成明文 ——
+ * 那样网络恢复之后它会一直去要一个不存在的文件。
+ *
+ * 想把老日子也压了：点一次「全量重发」，它们会以 .gz 重新发一遍；
+ * 然后「清理 GitHub 上的旧 .json 日文件」才有东西可删。
+ */
+var ENC_PLAIN = {};      // 路径 -> true：这一天在这个部署上是明文的
+
+/**
+ * 取一个日文件 / recent 包。索引说是 gz 就先解压再当 JSON 读。
+ * path 传的是【不带 .gz】的路径，后缀在这里加。
+ */
+function getPack(path, reuse) {
+  var suf = encSuffix();
+  if (!suf || ENC_PLAIN[path]) return getJSON(path, reuse);
+  if (!canGunzip()) {
+    return Promise.reject(new Error(
+      '这个浏览器不支持 gzip 解压（DecompressionStream），' +
+      '存档数据是压缩存的，读不了。请换新一点的浏览器。'));
+  }
+  var full = path + suf;
+  var url = reuse ? full
+                  : full + (full.indexOf('?') < 0 ? '?' : '&') + '_=' + Date.now();
+  return fetchT(url, reuse ? {} : { cache: 'no-store' }).then(function (r) {
+    if (r.status === 404) {
+      ENC_PLAIN[path] = true;               // 这一天还是换格式之前的明文
+      return getJSON(path, reuse);
+    }
+    if (!r.ok) throw new Error('HTTP ' + r.status + '：' + full);
+    return new Response(r.body.pipeThrough(new DecompressionStream('gzip'))).json();
+  });
+}
+
+/*
+ * 载入的"轮次"。每换一次房间、每点一次载入按钮就 +1。
+ *
+ * 为什么需要：上一轮还在飞的请求【不能再动界面】。
+ * 国内那个反馈里就有这个叠加：点了三个房间，三轮 loadDays 同时在跑，
+ * 谁最后回来谁改 setInfo / renderFiles —— 于是进度条和日期列表
+ * 显示的是**你两次之前点的那个房间**，看上去就像界面在自己乱跳。
+ */
+var LOAD_GEN = 0;
+
+function loadDays(items) {
+  // 没载过、或者索引里的条数比已载入的多（当天又有新消息）-> 都要拉
+  var todo = items.filter(function (d) {
+    return needLoad(d);
+  });
+  if (!todo.length) { setInfo(); return Promise.resolve(0); }
+  var gen = ++LOAD_GEN;
+  var total = todo.length;             // 钉住总数：todo 会被 shift 掉，不能拿它当分母
+  var done = 0, added = 0, failed = 0, timedOut = 0;
+  var streak = 0, gaveUp = 0;          // 连着超时几次了 / 放弃了几个没拉
+  var mine = function () { return gen === LOAD_GEN; };
+  setInfo('载入中 0/' + total + ' …');
+
+  // 顺序 4 路，避免一次开几十个请求
+  function worker() {
+    var d = todo.shift();
+    if (!d) return Promise.resolve();
+    // 这一轮已经过期了（你又换了房间）—— 别再往下拉了，省流量也省等待
+    if (!mine()) return Promise.resolve();
+    /*
+     * 连着几个都超时 = 这条线路现在就是不通。
+     * 再老老实实把剩下的一个个等满 20 秒，只是让你多干等几分钟，
+     * 换不来任何一条消息。**放弃得快，才有机会去重试或换线路。**
+     */
+    if (streak >= NET_GIVEUP) { gaveUp += todo.length + 1; todo.length = 0; return Promise.resolve(); }
+    return getPack(DATA + '/d/' + encodeURIComponent(d.room) + '/' + encodeURIComponent(d.day) + '.json')
+      .then(function (pack) {
+        // 数据照收：换了房间也不浪费已经拿到的东西，addAll 是按 id 去重的全局表
+        added += addAll(expand(pack));
+        // 记两件事：实际拿到多少条，以及是在哪一版索引下拿的。
+        // 索引和日文件的条数偶尔会对不上（发布中途失败、或者赶上 GitHub 抽风），
+        // 只比条数的话就会每次刷新都判定"有更新"反复重拉同一个文件。
+        // 加上索引版本：同一版索引下只试一次，等下一次发布再自动重试。
+        LOADED.set(d.room + '|' + d.day,
+                   { got: (pack.rows || []).length, gen: INDEX && INDEX.generated });
+        streak = 0;                    // 成功一次就把"连着超时"清零
+      })
+      .catch(function (e) {
+        failed++;
+        if (e && e.timeout) { timedOut++; streak++; } else { streak = 0; }
+      })
+      .then(function () {
+        done++;
+        if (mine()) setInfo('载入中 ' + done + '/' + total + ' …');
+        return worker();
+      });
+  }
+  var pool = [];
+  for (var i = 0; i < Math.min(4, total); i++) pool.push(worker());
+  return Promise.all(pool).then(function () {
+    // 过期的那一轮到此为止：数据留下，界面一个字都不改
+    if (!mine()) return added;
+    renderFiles(); setInfo();
+    /*
+     * 失败原因要分开说 —— 这两件事你要做的动作完全不同：
+     *   超时 / 连不上 → 网络问题，重试或者换线路
+     *   404          → 那一天还没发布，等下一次发布就有了
+     * 原来一律写成"可能还没发布"，国内用户看到的是一句
+     * **和真实原因完全无关的解释**，只会往错的方向找。
+     */
+    if (timedOut) {
+      setErr(timedOut + ' 个文件连不上（等了 ' + Math.round(NET_TIMEOUT_MS / 1000) +
+             ' 秒没有响应）' +
+             (gaveUp ? '，剩下 ' + gaveUp + ' 个没再试' : '') +
+             '。国内直连 GitHub 经常是这样 —— ' +
+             '换个网络、开代理，或者用 Cloudflare 那份地址再试。',
+             // 只重拉这一批里失败的那几天：成功的已经写进 LOADED，needLoad 会跳过
+             function () { loadDays(items); });
+    } else if (failed) {
+      setErr(failed + ' 个文件读取失败（可能还没发布）');
+    } else {
+      setErr('');
+    }
+    if (!ALL.size) emptyState('📭', '这些文件里没有可显示的消息',
+                              failed ? '有 ' + failed + ' 个文件没读到' : '');
+    else refresh(true);
+    return added;
+  });
+}
+
+/**
+ * 快通道：最近一小包消息。
+ *
+ * 完整的日文件每小时才重发一次（45 KB 起步，还要同时喂 GitHub）。
+ * recent.json 只有几 KB，采集端十分钟就更新一次 —— 所以点一次刷新，
+ * 最新的消息基本上就在这里面。
+ *
+ * 拿不到就当没有：GitHub 那条线路根本不生成这个文件，那边照旧走日文件。
+ * 重复也不要紧 —— addAll 按 id 去重，这些消息稍后出现在日文件里不会重。
+ */
+/*
+ * 这个部署到底有没有快通道文件。
+ *   null = 还不知道；true = 有；false = 试过了，没有（GitHub 那条线路就是没有）
+ *
+ * 为什么要记：GitHub Pages 上 data/recent.json 是【必然 404】的 ——
+ * 那边根本不生成它。功能上没问题（拿不到就当没有），但每次刷新都去请求一次，
+ * 浏览器控制台里就会反复冒出红色的 404。
+ * 那个 404 是正常的，可它看起来一点都不正常 —— 会让人以为网站坏了。
+ * 所以试过一次没有，本次会话就不再问了。
+ */
+var HAS_RECENT = null;
+
+function loadRecent() {
+  if (HAS_RECENT === false) return Promise.resolve(0);
+  return getPack(DATA + '/recent.json').then(function (rec) {
+    HAS_RECENT = true;
+    var n = 0;
+    ((rec && rec.packs) || []).forEach(function (p) {
+      n += addAll(expand(p));
+      // 记一笔"这个房间在快通道里出现过"。
+      // 新加的聊天室要等整点那次完整发布才会进索引，在那之前侧栏是看不到它的 ——
+      // 但它的消息其实十分钟前就已经在 recent 里了。有了这个，新房间
+      // 十分钟内就能在侧栏出现，而不用干等最多一小时。
+      RECENT_ROOMS[p.room] = (p.rows || []).length;
+    });
+    return n;
+  }).catch(function () {
+    // 只有"这个部署没有这个文件"才永久记下来。网络抖一下不该让快通道整场失效，
+    // 但我们在这一层分不清 404 和断网 —— 所以只在【一次都没成功过】时才封。
+    if (HAS_RECENT === null) HAS_RECENT = false;
+    return 0;
+  });
+}
+
+/** 日文件载完之后再补一次 recent；有新东西才重画。 */
+function withRecent() {
+  return loadRecent().then(function (n) {
+    if (n) { renderFiles(); refresh(true); }
+    setInfo();
+    return n;
+  });
+}
+
+/**
+ * 错误条。第二个参数给了就顺带放一个「重试」按钮。
+ *
+ * 为什么值得多这一下：连不上的时候，唯一有用的动作就是再试一次 ——
+ * 而在手机上"刷新整页"意味着**已经载进内存的几千条要全部重下**。
+ * 一个只重拉失败那几天的按钮，代价差着一个数量级。
+ */
+function setErr(m, onRetry) {
+  var box = $('#err');
+  clear(box);
+  if (!m) return;
+  box.appendChild(document.createTextNode(m));
+  if (typeof onRetry !== 'function') return;
+  var b = el('button', 'retry', '重试');
+  b.style.marginLeft = '8px';
+  b.onclick = function () { setErr(''); onRetry(); };
+  box.appendChild(b);
+}
+function setInfo(m) {
+  if (m) { $('#info').textContent = m; return; }
+  if (!INDEX) { $('#info').textContent = ''; return; }
+  var mine = roomDays();
+  var mineN = mine.reduce(function (a, d) { return a + (d.n || 0); }, 0);
+  var mineLoaded = 0;
+  LOADED.forEach(function (v, k) { if (k.split('|')[0] === sel.room) mineLoaded++; });
+  $('#info').textContent =
+    roomLabel(sel.room) + '：' + mineN.toLocaleString() + ' 条 / ' + mine.length + ' 天 · 已载入 ' +
+    mineLoaded + ' 天\n存档合计 ' + INDEX.total.toLocaleString() + ' 条';
+}
+
+function emptyState(icon, title, hint) {
+  var f = $('#feed');
+  clear(f);
+  var ph = el('div', 'placeholder');
+  ph.appendChild(el('div', 'big', icon));
+  ph.appendChild(el('div', title));
+  if (hint) {
+    var h = el('div', null, hint);
+    h.style.fontSize = '12.5px';
+    ph.appendChild(h);
+  }
+  f.appendChild(ph);
+}
+
+/*
+ * ============================================================================
+ *                       合同计算器（第二个模式）
+ * ============================================================================
+ *
+ * 模式有两层：
+ *   顶栏      聊天记录 / 计算器
+ *   计算器里  销售办公室计算器 / 合同计算器（还没做，先占个位）
+ *
+ * 和聊天存档【一行状态都不共享、一个函数都不互相调用】——
+ * 存档那一套（索引、日文件、深搜、滚到底）是这页最难验的部分，
+ * 计算器写崩了也不该碰到它。
+ *
+ * ---- 销售办公室：模型 ----
+ *
+ *   每个产品 i：数量 qᵢ、合同单价 pᵢ、要求品质 Qᵢ、你的单位进价 cᵢ
+ *   合同奖励：pᵢ · qᵢ · b · Qᵢ          b = 奖励% / 100
+ *   合同占用销售办公室 H 小时，这段时间付工资 W（整张合同的总额）
+ *
+ *   收入 R = Σ pᵢqᵢ(1 + b·Qᵢ)
+ *   货款 G = Σ cᵢqᵢ
+ *   利润   = R − G − W
+ *   时利   = 利润 ÷ H
+ *
+ * 这套公式是拿他那张 Excel 的实际数字逐位对过的（测试里钉着）。
+ */
+
+/*
+ * ⚠️ 输入框是 type=text，不是 type=number。这不是随便选的。
+ *
+ * 线上第一版用的 number，结果【小数点打不进去】：
+ * 每敲一下都会 onset(Number(值)) 然后重画，而 Number('1.') === 1，
+ * 重画时写回去的是 '1' —— 你刚打的那个点当场就没了，永远输不到小数位。
+ *
+ * 现在状态里存的是**原始字符串**，只有算的时候才 Number() —— '1.' 原样留着。
+ * 顺带把中文输入法下最常见的几个字符就地换掉（。．，全角数字），
+ * 不然中文键盘打小数点会直接被过滤掉，看着像键盘坏了。
+ */
+function normNum(s) {
+  s = String(s == null ? '' : s);
+  s = s.replace(/[。．｡､、,，]/g, '.');                       // 中文句号/逗号 → 小数点
+  s = s.replace(/[０-９]/g, function (c) {                     // 全角数字 → 半角
+    return String.fromCharCode(c.charCodeAt(0) - 0xFEE0);
+  });
+  s = s.replace(/[－ー—–]/g, '-');
+  s = s.replace(/[^0-9.\-]/g, '');
+  var neg = s.charAt(0) === '-';
+  s = s.replace(/-/g, '');
+  var parts = s.split('.');
+  if (parts.length > 2) s = parts.shift() + '.' + parts.join('');   // 只留第一个点
+  return (neg ? '-' : '') + s;
+}
+
+/** 只取数，取不出来当 0 —— 空着、只打了个负号、只打了个点都不该让整页炸掉。 */
+function cnum(v) { var n = Number(v); return isFinite(n) ? n : 0; }
+
+/**
+ * 合同：收入、货款、利润、时利。
+ *
+ * ⚠️ 奖励是 p·q·b·Q，**q 只乘一次**。
+ * 原表 G5 已经含了 q，后面 G9 又写成 (B5+G5)*A5 —— 等于把奖励乘了 q 次。
+ * 数量填 1 看不出来，填 10 就差五十多万。
+ */
+function calcContract(c) {
+  var b = cnum(c.bonus) / 100;
+  var H = cnum(c.hours) || 1;          // 兜个 1，别让它变成 Infinity
+  var W = cnum(c.wage);
+  var rows = (c.items || []).map(function (it) {
+    var q = cnum(it.q), p = cnum(it.p), Q = cnum(it.quality), cost = cnum(it.cost);
+    var gross = p * q;
+    var bonus = p * q * b * Q;
+    var goods = cost * q;
+    return { q: q, p: p, quality: Q, cost: cost,
+             gross: gross, bonus: bonus, rev: gross + bonus,
+             goods: goods, profit: gross + bonus - goods,
+             perQ: p * b };            // 每 +1 品质，合同多给多少（每单位）
+  });
+  var add = function (k) {
+    return rows.reduce(function (a, r) { return a + r[k]; }, 0);
+  };
+  var rev = add('rev'), goods = add('goods');
+  var profit = rev - goods - W;
+  return { rows: rows, rev: rev, goods: goods, wage: W, hours: H,
+           cost: goods + W, profit: profit, hourly: profit / H };
+}
+
+/**
+ * 要达到目标时利，货款最多能花多少。
+ *
+ *   货款总预算 = 收入 − 工资 − 目标时利 × 小时数
+ *
+ * 这个数**原表其实是对的**（G9 / G18 = 35600.78）。
+ * 坏的是把预算分给几个产品那一段：原式 G14 = B5 / (B5*A5 + B6*A6)，
+ * 分子是单价、分母是总收入，两边不同量纲 —— 数量都填 1 时刚好蒙对。
+ * 这里换成按收入占比分。
+ */
+function calcBudget(c) {
+  var r = calcContract(c);
+  var budget = r.rev - r.wage - cnum(c.target) * r.hours;
+  var revSum = r.rev;
+  var byShare = r.rows.map(function (row) {
+    var share = revSum ? row.rev / revSum : 0;
+    var money = budget * share;
+    return { share: share, money: money, unit: row.q ? money / row.q : 0 };
+  });
+  return { contract: r, budget: budget, byShare: byShare };
+}
+
+/**
+ * 品质值不值得加钱。
+ *
+ * 合同每 +1 品质给你 p×b（每单位）：
+ *   供应商每 +1 品质加价 < p×b  → 买高 q 划算
+ *   加价 > p×b                 → 高 q 是在给供应商送钱
+ */
+function qualityWorth(p, bonusPct) { return cnum(p) * cnum(bonusPct) / 100; }
+
+/**
+ * 生产端：成本压到多少时利才够。
+ *
+ * 【界面上暂时不显示】—— 他说那几个产量数据不好弄，等有数据再说。
+ * 函数和测试留着，到时候把卡片接回去就行，不用重写。
+ */
+function calcProd(pr) {
+  var mul = (1 + cnum(pr.speed) / 100) * (cnum(pr.cycle) || 1);
+  return (pr.rows || []).map(function (row) {
+    var rate = cnum(row.rate) * mul;
+    var need = rate ? cnum(pr.target) / rate : Infinity;
+    return { name: row.name, rate: rate, need: need,
+             price: cnum(row.price), max: cnum(row.price) - need };
+  });
+}
+
+/* ------------------------------ 状态 ------------------------------ */
+
+/*
+ * 默认值【只留不属于任何人的那些】：小时数 47、目标时利 500。
+ * 工资、数量、单价、奖励%、品质、进价一律空着 ——
+ * 那几个是他自己的单子数据，不该变成所有人打开就看见的示例。
+ */
+function calcBlankItem() { return { q: '', p: '', quality: '', cost: '' }; }
+function calcBlank() {
+  return { hours: 47, wage: '', bonus: '', target: 500, items: [calcBlankItem()] };
+}
+var CALC_DEFAULT = {
+  hours: 47, wage: '', bonus: '', target: 500,
+  items: [calcBlankItem()],
+  // 生产端的数据先留着，卡片没显示。等他有数据了再接回来。
+  prod: { target: 600, speed: 0, cycle: 1, rows: [] },
+};
+
+var CALC = (function () {
+  try {
+    var raw = JSON.parse(localStorage.getItem('simco.calc') || 'null');
+    if (raw && raw.items && raw.items.length) {
+      if (!raw.prod) raw.prod = { target: 600, speed: 0, cycle: 1, rows: [] };
+      return raw;
+    }
+  } catch (e) { /* 存的东西坏了就从空的开始，不值得为它报错 */ }
+  return JSON.parse(JSON.stringify(CALC_DEFAULT));
+})();
+
+/*
+ * 存盘。
+ *
+ * ⚠️ `simco.calc` 这个键**是对外接口** —— 油猴插件的「合同对比」
+ * 靠读它拿到你现在填的这张单子。所以下面几件事不能随便动：
+ *   · 键名 'simco.calc'
+ *   · 字段名 hours / wage / bonus / target / items[{q,p,quality,cost}]
+ *   · 值是【字符串】（输入框的原文，见 normNum 那段）
+ * 要改结构的话，插件那边（userscript/simco-chat-stats.user.js）要一起改，
+ * 而且插件是用户自己更新的 —— 会有一段时间两边版本对不上。
+ * 所以：**只加字段，不改已有字段的名字和含义。**
+ */
+function calcSave() {
+  try { localStorage.setItem('simco.calc', JSON.stringify(CALC)); }
+  catch (e) { /* 存不了不影响算 */ }
+}
+
+/* ------------------------------ 显示用的小工具 ------------------------------ */
+
+/** 钱：整数、带千分位。这个量级上小数位没有意义，只会让数字变长。 */
+function cmoney(x) {
+  if (!isFinite(x)) return '—';
+  return Math.round(x).toLocaleString();
+}
+/** 时利：要看到小数点后两位 —— 它是这页唯一一个"差几毛钱也想知道"的数。 */
+function cmoney2(x) {
+  if (!isFinite(x)) return '—';
+  return x.toLocaleString(undefined,
+    { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function cel(tag, cls, text) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = String(text);
+  return e;
+}
+
+/**
+ * 一个输入框。改了就重算重画整块。
+ *
+ * 全画一遍在任何设备上都是零点几毫秒，不值得为它写一套依赖追踪。
+ * 但**焦点和光标位置要还回去** —— 否则你打第二个字符时光标已经不在框里了，
+ * 而且这个坏法在测试里看不出来，只有真去打字才发现。
+ */
+function cinput(val, onset, key, cls) {
+  var i = document.createElement('input');
+  i.type = 'text';                 // 见上面 normNum 那段：number 会吃掉小数点
+  i.setAttribute('inputmode', 'decimal');
+  i.setAttribute('autocomplete', 'off');
+  if (cls) i.className = cls;
+  if (key) i.setAttribute('data-k', key);
+  i.value = (val == null) ? '' : String(val);
+  i.oninput = function () {
+    var raw = i.value;
+    var fixed = normNum(raw);
+    var caret = null;
+    try { caret = i.selectionStart; } catch (e) { caret = null; }
+    if (fixed !== raw && caret != null) caret -= (raw.length - fixed.length);
+    onset(fixed);
+    calcSave();
+    renderCalc();
+    if (!key) return;
+    var back = document.querySelector('#calc [data-k="' + key + '"]');
+    if (!back || !back.focus) return;
+    back.focus();
+    try {
+      var at = caret == null ? back.value.length : Math.max(0, caret);
+      back.setSelectionRange(at, at);
+    } catch (e) { /* 个别浏览器不支持，无所谓 */ }
+  };
+  return i;
+}
+
+function cfield(label, val, onset, key) {
+  var w = cel('div', 'fld');
+  w.appendChild(cel('label', null, label));
+  w.appendChild(cinput(val, onset, key));
+  return w;
+}
+
+function ckpi(k, v, cls) {
+  var d = cel('div', 'kpi' + (cls ? ' ' + cls : ''));
+  d.appendChild(cel('div', 'k', k));
+  d.appendChild(cel('div', 'v', v));
+  return d;
+}
+
+/**
+ * 建表。哪几列是输入列【自己认】—— 看第一行有没有塞元素进去。
+ * 让调用方多传一个数组的话，早晚会和真实的列对不上（加了一列忘了改），
+ * 而错的样子只是"标题歪了一点"，没人会发现。
+ */
+function ctable(head, rows) {
+  var isIn = (rows[0] || []).map(function (c) { return !!(c && c.nodeType); });
+  var wrap = cel('div', 'tw');
+  var t = document.createElement('table');
+  var thead = document.createElement('thead');
+  var tr = document.createElement('tr');
+  head.forEach(function (h, i) { tr.appendChild(cel('th', isIn[i] ? 'i' : null, h)); });
+  thead.appendChild(tr); t.appendChild(thead);
+  var tb = document.createElement('tbody');
+  rows.forEach(function (cells) {
+    var r = document.createElement('tr');
+    cells.forEach(function (c) {
+      var td = document.createElement('td');
+      if (c && c.nodeType) { td.className = 'i'; td.appendChild(c); }
+      else if (c && c.txt != null) { td.textContent = c.txt; td.className = c.cls || ''; }
+      else td.textContent = c == null ? '' : String(c);
+      r.appendChild(td);
+    });
+    tb.appendChild(r);
+  });
+  t.appendChild(tb); wrap.appendChild(t);
+  return wrap;
+}
+
+/**
+ * 产品行的输入格子 + 那一行自己的删除键。
+ *
+ * 原来只能删最后一行 —— 中间填错一行就得把后面的全删了重来。
+ * 现在每行自己带一个 ×，删的就是这一行。
+ * 只剩一行时不给删：删光了没有任何好处，还得再点一次"加一个"。
+ */
+function citemCells(list, it, i, keyPre, onchange) {
+  var mk = function (f, suffix) {
+    return cinput(it[f], function (v) { it[f] = v; }, keyPre + i + suffix);
+  };
+  var cells = [cel('span', null, '产品 ' + (i + 1)),
+               mk('q', 'q'), mk('p', 'p'), mk('quality', 'Q'), mk('cost', 'c')];
+  var del = cel('button', 'xbtn', '×');
+  del.title = '删掉这一行';
+  if (list.length <= 1) { del.disabled = true; }
+  else {
+    del.onclick = function () {
+      list.splice(i, 1); calcSave(); (onchange || renderCalc)();
+    };
+  }
+  return { cells: cells, del: del };
+}
+
+/* ------------------------------ 主界面 ------------------------------ */
+
+function renderCalc() {
+  renderCalcTabs();
+  var box = document.querySelector('#cwrap');
+  if (!box) return;
+  while (box.firstChild) box.removeChild(box.firstChild);
+
+  if (sel.calcTab === 'contract') {
+    var soon = cel('div', 'card');
+    soon.appendChild(cel('h3', null, '合同计算器'));
+    soon.appendChild(cel('div', 'sub', '正在施工'));
+    box.appendChild(soon);
+    return;
+  }
+
+  var R = calcContract(CALC);
+  var B = calcBudget(CALC);
+
+  /* ---------------- 卡片 ①：销售办公室计算器 ---------------- */
+  var c1 = cel('div', 'card');
+  c1.appendChild(cel('h3', null, '销售办公室计算器'));
+  c1.appendChild(cel('div', 'sub',
+    '收入 = 单价×数量×(1 + 奖励% × 品质)。总成本 = 货款 + 工资。时利 = 利润 ÷ 小时数。'));
+
+  var g1 = cel('div', 'fgrid');
+  g1.appendChild(cfield('合同小时数（默认 47）', CALC.hours,
+                        function (v) { CALC.hours = v; }, 'hours'));
+  g1.appendChild(cfield('工资', CALC.wage, function (v) { CALC.wage = v; }, 'wage'));
+  g1.appendChild(cfield('奖励（%）', CALC.bonus, function (v) { CALC.bonus = v; }, 'bonus'));
+  g1.appendChild(cfield('目标时利', CALC.target, function (v) { CALC.target = v; }, 'target'));
+  c1.appendChild(g1);
+
+  var rows1 = CALC.items.map(function (it, i) {
+    var row = R.rows[i];
+    var c = citemCells(CALC.items, it, i, 'i');
+    return c.cells.concat([
+      { txt: cmoney(row.bonus) },
+      { txt: cmoney(row.rev), cls: 'out' },
+      { txt: cmoney(row.goods) },
+      { txt: cmoney(row.profit), cls: 'out' },
+      c.del,
+    ]);
+  });
+  c1.appendChild(ctable(
+    ['', '数量', '合同单价', '品质', '你的单位进价',
+     '奖励金额', '收入', '货款', '毛利', ''],
+    rows1));
+
+  var btns = cel('div', 'crow');
+  var addb = cel('button', 'cbtn', '+ 加一个产品');
+  addb.onclick = function () {
+    CALC.items.push(calcBlankItem()); calcSave(); renderCalc();
+  };
+  btns.appendChild(addb);
+  c1.appendChild(btns);
+
+  var k1 = cel('div', 'kpis');
+  k1.appendChild(ckpi('收入（含奖励）', cmoney(R.rev)));
+  k1.appendChild(ckpi('总成本（货+工资）', cmoney(R.cost)));
+  k1.appendChild(ckpi('利润', cmoney(R.profit), R.profit >= 0 ? 'good' : 'bad'));
+  k1.appendChild(ckpi('时利', cmoney2(R.hourly),
+                      'big ' + (R.hourly >= 0 ? 'good' : 'bad')));
+  k1.appendChild(ckpi('距目标时利', cmoney2(R.hourly - cnum(CALC.target)),
+                      R.hourly >= cnum(CALC.target) ? 'good' : 'bad'));
+  c1.appendChild(k1);
+  box.appendChild(c1);
+
+  /* ---------------- 卡片 ②：最高买价 ---------------- */
+  var c2 = cel('div', 'card');
+  c2.appendChild(cel('h3', null, '最多能出到多少钱进货'));
+  c2.appendChild(cel('div', 'sub',
+    '货款总预算 = 收入 − 工资 − 目标时利 × 小时数。' +
+    '花在货上的钱只要不超过这个数，时利就达标。'));
+
+  var k2 = cel('div', 'kpis');
+  k2.appendChild(ckpi('货款总预算', cmoney(B.budget), 'big acc'));
+  k2.appendChild(ckpi('目前实际货款', cmoney(R.goods)));
+  k2.appendChild(ckpi('还差 / 溢出', cmoney(B.budget - R.goods),
+                      B.budget - R.goods >= 0 ? 'good' : 'bad'));
+  c2.appendChild(k2);
+
+  var rows2 = R.rows.map(function (row, i) {
+    return [
+      cel('span', null, '产品 ' + (i + 1)),
+      { txt: row.q ? String(row.q) : '—' },
+      { txt: (B.byShare[i].share * 100).toFixed(1) + '%' },
+      { txt: cmoney(B.byShare[i].unit), cls: 'out' },
+      { txt: cmoney(row.cost) },
+      { txt: cmoney(qualityWorth(row.p, CALC.bonus)), cls: 'out' },
+    ];
+  });
+  var g2 = cel('div', 'grp');
+  g2.appendChild(cel('h4', null, '每单位最多出多少'));
+  g2.appendChild(ctable(
+    ['', '数量', '收入占比', '按占比分：单价上限', '现在的进价', '每 +1 品质值多少'],
+    rows2));
+  c2.appendChild(g2);
+
+  var w3 = cel('div', 'why');
+  w3.appendChild(cel('b', null, '「每 +1 品质值多少」怎么用：'));
+  w3.appendChild(document.createTextNode(
+    ' 合同每高 1 点品质多给你 单价×奖励% （每单位）。' +
+    '供应商每 +1 品质的加价低于这个数，买高品质才划算；高于它，' +
+    '高品质就是在给供应商送钱。'));
+  c2.appendChild(w3);
+  box.appendChild(c2);
+}
+
+/* ------------------------------ 模式切换 ------------------------------ */
+
+/*
+ * 存档那边的滚动位置要自己存一下再还原：display:none 会把 scrollTop 抹成 0，
+ * 不还原的话每从计算器切回来一次，就被弹回消息流顶上一次。
+ */
+var MODE_FEED_TOP = 0;
+function setMode(m) {
+  var toCalc = (m === 'calc');
+  var feed = document.querySelector('#feed');
+  if (toCalc && feed) MODE_FEED_TOP = feed.scrollTop;
+  try { document.body.classList.toggle('mode-calc', toCalc); } catch (e) {}
+  sel.mode = toCalc ? 'calc' : 'chat';
+  savePref();
+  if (toCalc) renderCalc();
+  else if (feed) feed.scrollTop = MODE_FEED_TOP;
+  renderModeTabs();
+}
+
+function setCalcTab(t) {
+  sel.calcTab = (t === 'contract') ? 'contract' : 'office';
+  savePref();
+  renderCalc();
+}
+
+function renderModeTabs() {
+  ['#modetabs1', '#modetabs2'].forEach(function (id) {
+    var box = document.querySelector(id);
+    if (!box) return;
+    while (box.firstChild) box.removeChild(box.firstChild);
+    [['chat', '聊天记录'], ['calc', '计算器']].forEach(function (p) {
+      var b = cel('button', sel.mode === p[0] ? 'on' : null, p[1]);
+      b.onclick = function () { setMode(p[0]); };
+      box.appendChild(b);
+    });
+  });
+}
+
+/** 计算器里面那一层：销售办公室 / 合同（后者还没做）。 */
+function renderCalcTabs() {
+  var box = document.querySelector('#calctabs');
+  if (!box) return;
+  while (box.firstChild) box.removeChild(box.firstChild);
+  [['office', '销售办公室'], ['contract', '合同']].forEach(function (p) {
+    var b = cel('button', sel.calcTab === p[0] ? 'on' : null, p[1]);
+    b.onclick = function () { setCalcTab(p[0]); };
+    box.appendChild(b);
+  });
+}
+
+function boot() {
+  /*
+   * 宽度档位【在拿数据之前就先应用】。
+   * 放在后面的话，上次选了紧凑的人会先看到一帧正常宽度再跳回去 ——
+   * 一闪一跳，看着像页面自己抖了一下。
+   */
+  applyWidth();
+  /*
+   * 模式也在拿数据之前就定下来。
+   * 上次停在计算器的人，如果等索引回来才切，会先闪一下聊天界面 ——
+   * 而索引在国内可能要等十几秒，那就不是"闪一下"了。
+   */
+  renderModeTabs();
+  if (sel.mode === 'calc') setMode('calc');
+  renderTools();
+  getJSON(DATA + '/index.json').then(function (ix) {
+    INDEX = ix;
+    // 只按条数过滤，不按 published 过滤。published:false 只表示"这天还有一部分
+    // 没传上去"，已经传上去的那部分是真实存在的，不该被藏起来。
+    INDEX.days = (ix.days || []).filter(function (d) { return (d.n || 0) > 0; });
+    if (!encReady()) return;
+    // 索引到手才知道有哪些房间。上次选的那个可能已经不在了，回落到 ZH。
+    sel.room = pickRoom();
+    renderFiles(); setInfo();
+    var about = $('#about');
+    clear(about);
+    about.appendChild(el('div', null, '更新时间 ' + fmtFull(ix.generated)));
+    about.appendChild(el('div', null, '游戏内公开聊天频道的存档，仅供查阅。'));
+    // 页面版本号：两个站对不上就说明有一边的页面没更新
+    var bv = el('div', null, '页面 ' + PAGE_BUILD);
+    bv.style.opacity = '.55';
+    bv.style.fontVariantNumeric = 'tabular-nums';
+    bv.title = '这份页面的版本号。CF 和 GitHub 两个站的这个号应该一样，' +
+               '对不上就说明有一边没更新。';
+    about.appendChild(bv);
+    if (!INDEX.days.length) {
+      emptyState('📭', '索引里还没有已发布的日期',
+                 '采集端跑一会儿并发布快照之后，刷新本页即可');
+      return;
+    }
+    // 只载【当前房间】最近三天。以前这里是 INDEX.days.slice(0,3) ——
+    // 三个房间混在一起排序，这三天很可能全是同一个房间的。
+    return loadDays(roomDays().slice(0, 3)).then(withRecent);
+  }).catch(function (e) {
+    setErr('读不到索引：' + e.message);
+    emptyState('📭', '还没有数据', '等采集端发布第一份快照后刷新即可');
+  });
+}
+
+// ---------- 时间 / 颜色 ----------
+var PALETTE = ['#7dd3fc','#86efac','#fcd34d','#fca5a5','#c4b5fd','#f9a8d4',
+               '#5eead4','#fdba74','#a5b4fc','#d9f99d','#f0abfc','#93c5fd'];
+function colorOf(sid) { return PALETTE[Math.abs(Number(sid) || 0) % PALETTE.length]; }
+function pad(n) { return (n < 10 ? '0' : '') + n; }
+function dayOf(t) { var d = new Date(t);
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+function timeOf(t) { var d = new Date(t);
+  return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); }
+function hmOf(t) { var d = new Date(t); return pad(d.getHours()) + ':' + pad(d.getMinutes()); }
+function fmtFull(iso) { var d = new Date(iso); return isNaN(d) ? '未知' :
+  dayOf(d.getTime()) + ' ' + hmOf(d.getTime()); }
+function dayLabel(day) {
+  var today = dayOf(Date.now()), y = dayOf(Date.now() - 86400000);
+  if (day === today) return day + '  今天';
+  if (day === y) return day + '  昨天';
+  var w = '日一二三四五六'[new Date(day + 'T12:00:00').getDay()];
+  return day + '  周' + (w || '?');
+}
+
+// ---------- 正文渲染：分词后逐个建节点，一次 innerHTML 都不用 ----------
+function splitBy(parts, re, type) {
+  var out = [];
+  parts.forEach(function (p) {
+    if (p.t !== 'txt') { out.push(p); return; }
+    var last = 0, m;
+    re.lastIndex = 0;
+    while ((m = re.exec(p.s)) !== null) {
+      if (!m[0].length) { re.lastIndex++; continue; }
+      if (m.index > last) out.push({ t: 'txt', s: p.s.slice(last, m.index) });
+      out.push({ t: type, s: m[0] });
+      last = m.index + m[0].length;
+    }
+    if (last < p.s.length) out.push({ t: 'txt', s: p.s.slice(last) });
+  });
+  return out;
+}
+
+function appendText(parent, text, q) {
+  if (!q) { parent.appendChild(document.createTextNode(text)); return; }
+  var low = text.toLowerCase(), needle = q.toLowerCase(), i = 0;
+  while (true) {
+    var at = low.indexOf(needle, i);
+    if (at < 0) { parent.appendChild(document.createTextNode(text.slice(i))); break; }
+    if (at > i) parent.appendChild(document.createTextNode(text.slice(i, at)));
+    parent.appendChild(el('mark', null, text.slice(at, at + needle.length)));
+    i = at + needle.length;
+  }
+}
+
+/*
+ * ==================== 玩家贴的图 ====================
+ *
+ * 玩家会发 https://snipboard.io/XXXX.jpg 这种截图链接。
+ * 只当链接的话，看存档的人要一个个点开 —— 而截图往往正是那条消息的全部内容。
+ *
+ * ⚠️ 但"把任何 URL 都当图片渲染"是不行的，这是别人写的内容：
+ *   · 只认【白名单里的域名】，别的一律还是纯链接
+ *   · 路径必须长得像图片文件（防止拿站内某个页面当图片加载）
+ *   · 只认 https
+ *   · no-referrer：不告诉对方是从哪个页面点过去的
+ *   · lazy：滚到才加载 —— 一整天几千条里可能有几十张图，
+ *     一次性全加载既慢又等于把每个访客的 IP 都送过去
+ *
+ * ⚠️ 还有一件必须说清楚的事：**图片是从第三方加载的。**
+ * 谁看存档，谁的浏览器就会去连 snipboard。这是内嵌外部图片的固有代价，
+ * 换不掉 —— 除非把图转存到自己这边，那是另一件事（版权、容量、失效）。
+ */
+var IMG_HOSTS = [
+  'https://snipboard.io/',
+  'https://i.snipboard.io/',
+];
+/*
+ * 路径必须【整条】长这样：/文件名.后缀，不许有下级目录。
+ * ⚠️ 只写结尾锚点（$）是不够的 —— /a/b.jpg 一样能匹配上末尾那段。
+ * 起头的 ^ 才是把"多级路径"挡在外面的那一笔。
+ */
+var RE_IMG_PATH = /^\/[A-Za-z0-9_\-]+\.(?:jpg|jpeg|png|gif|webp)$/i;
+
+/** 这个链接能不能安全地当图片显示。 */
+function imageUrl(u) {
+  var s = String(u || '');
+  for (var i = 0; i < IMG_HOSTS.length; i++) {
+    if (s.indexOf(IMG_HOSTS[i]) !== 0) continue;
+    // 掐掉 ?query 和 #hash 再看路径形状 —— 带参数的一律不认
+    if (s.indexOf('?') >= 0 || s.indexOf('#') >= 0) return null;
+    try {
+      var path = s.slice(IMG_HOSTS[i].length - 1);   // 保留开头的 /
+      if (RE_IMG_PATH.test(path)) return s;
+    } catch (e) { return null; }
+    return null;
+  }
+  return null;
+}
+
+/*
+ * 灯箱。整个页面共用一个，开的时候才填内容 ——
+ * 每张图各建一个的话，一天几十张图就是几十个隐藏节点白占内存。
+ */
+var LB = { open: false, url: '', real: false };
+
+function lbClose() {
+  var box = $('#lightbox');
+  if (!box) return;
+  box.hidden = true;
+  box.className = '';
+  clear(box);
+  LB.open = false;
+  try { document.body.classList.remove('lb'); } catch (e) {}
+}
+
+function lbToggleReal() {
+  var box = $('#lightbox');
+  if (!box) return;
+  LB.real = !LB.real;
+  box.className = LB.real ? 'real' : '';
+  var t = $('#lbzoom');
+  if (t) t.textContent = LB.real ? '缩到整屏' : '看原始大小';
+}
+
+function lbOpen(url) {
+  var box = $('#lightbox');
+  if (!box) return;
+  clear(box);
+  LB.open = true; LB.url = url; LB.real = false;
+  box.className = '';
+  box.hidden = false;
+  try { document.body.classList.add('lb'); } catch (e) {}
+
+  var stage = el('div', 'lbstage');
+  var img = el('img');
+  img.src = url;
+  img.alt = '玩家贴的图';
+  img.referrerPolicy = 'no-referrer';
+  /*
+   * 点图片本身 = 在【铺满】和【原始像素】之间切，不关灯箱。
+   * "看不清"要靠这个解决：铺满屏幕对一张 1920 宽的截图，
+   * 在手机上仍然是缩小的。
+   */
+  img.onclick = function (e) { e.stopPropagation(); lbToggleReal(); };
+  img.onerror = function () { lbClose(); };
+  stage.appendChild(img);
+  /* 点空白处关掉 —— 手机上这是最自然的动作 */
+  stage.onclick = function () { lbClose(); };
+  box.appendChild(stage);
+
+  var bar = el('div', 'lbbar');
+  var zoom = el('button', 'lbbtn', '看原始大小');
+  zoom.id = 'lbzoom';
+  zoom.onclick = function (e) { e.stopPropagation(); lbToggleReal(); };
+  bar.appendChild(zoom);
+
+  var open = el('a', 'lbbtn', '新标签打开');
+  open.href = url; open.target = '_blank';
+  open.rel = 'noopener noreferrer nofollow';
+  open.onclick = function (e) { e.stopPropagation(); };
+  bar.appendChild(open);
+
+  bar.appendChild(el('span', 'sp'));
+
+  var x = el('button', 'lbbtn', '✕ 关闭');
+  x.setAttribute('aria-label', '关闭');
+  x.onclick = function (e) { e.stopPropagation(); lbClose(); };
+  bar.appendChild(x);
+
+  box.appendChild(bar);
+  box.onclick = function () { lbClose(); };
+}
+
+/*
+ * ===================== 玩家资料页 =====================
+ *
+ * 点名字打开。三件事写在一起：接口抓来的公司资料、存档里的统计、
+ * 以及原来那个「只看这个人的消息」。
+ *
+ * ⚠️ 资料【不是实时的】。采集端一天只抓几十个人，一轮下来要好几天，
+ * 所以"抓取于 N 天前"那一行不是装饰 —— 它得显眼，超过 30 天还要变色。
+ * 一份两周前的资料和实时的长得一模一样，这是这个页面最容易骗人的地方。
+ *
+ * ⚠️ 名单只覆盖游戏房（ZH）。别的房间的人点开是"还没有资料"，
+ * 这不是出错 —— 面板里要说清楚，不然看着像坏了。
+ */
+var PL = { map: null, name: null, state: 'idle' };   // idle | loading | ok | fail
+var PC = { open: false };
+
+/** players.json 只在第一次点名字时才拉，平时一个请求都不发。 */
+function plLoad() {
+  if (PL.state === 'ok' || PL.state === 'loading') return Promise.resolve();
+  PL.state = 'loading';
+  return getPack(DATA + '/players.json').then(function (j) {
+    var map = {}, byName = {};
+    (j && j.players ? j.players : []).forEach(function (p) {
+      if (p.sid) map[p.sid] = p;
+      // 名字索引带上领域，否则同名不同服会互相盖掉
+      if (p.co) byName[String(p.co).toLowerCase() + '|' + (Number(p.realm) || 0)] = p;
+    });
+    PL.map = map; PL.name = byName; PL.state = 'ok';
+  }).catch(function () {
+    PL.state = 'fail';                 // 没发布过 / 404 都走这里，不当错误弹
+  });
+}
+
+/*
+ * 找这个人的资料。
+ *
+ * 先按 sid 找，找不到再按公司名找。
+ * 两条都留着是因为「聊天里的 sid 就是公司 id」这件事**没有被真正验证过** ——
+ * 看起来是，但看起来是和验过了不是一回事。哪天不是了，
+ * 名字这条路还能兜住，而不是整个功能静默地全部失灵。
+ */
+function plFind(m) {
+  if (PL.state !== 'ok') return null;
+  /*
+   * 先按 sid 找。sid 是公司 id，全站唯一 —— 两个服务器的同名公司 id 不同，
+   * 所以这条路本身就分得开。
+   *
+   * 按名字兜底时【必须带上领域】：R1 和 R2 可以有同名公司，
+   * 只按名字找会把另一个服务器那个人的资料显示在这个人名下。
+   */
+  if (m.sid && PL.map[m.sid]) return PL.map[m.sid];
+  if (!m.name) return null;
+  // m._r 是 realm+1（R1 = 1），发布数据里的 realm 是 0 起
+  return PL.name[String(m.name).toLowerCase() + '|' + ((Number(m._r) || 1) - 1)] || null;
+}
+
+/** LimitedCompany 这种代号，能翻就翻，翻不了原样显示 —— 绝不留空。 */
+var LEVEL_KIND = {
+  LimitedCompany: '有限公司', PublicCompany: '上市公司',
+  Corporation: '股份公司', SoleTrader: '个体户', Partnership: '合伙企业',
+};
+function levelKindName(k) { return LEVEL_KIND[k] || String(k || ''); }
+
+/**
+ * 带符号的加成。
+ * 原来一律拼 '+'，负数就成了 "+-1" —— 销售加成是真的会是负的。
+ */
+function psign(n) {
+  if (typeof n !== 'number' || !n) return '';
+  return (n > 0 ? '+' : '') + n;
+}
+
+function pnum(n) {
+  n = Number(n) || 0;
+  if (n >= 1e8) return (n / 1e8).toFixed(2) + ' 亿';
+  if (n >= 1e4) return (n / 1e4).toFixed(1) + ' 万';
+  return String(n);
+}
+
+function pcClose() {
+  var box = $('#pcard');
+  if (!box) return;
+  box.hidden = true;
+  clear(box);
+  PC.open = false;
+  try { document.body.classList.remove('pc'); } catch (e) {}
+}
+
+function pcOpen(m) {
+  var box = $('#pcard');
+  if (!box) return;
+  PC.open = true;
+  box.hidden = false;
+  try { document.body.classList.add('pc'); } catch (e) {}
+  pcRender(m);
+  // 资料还没载入就先把面板开出来（存档统计那部分立刻就能看），
+  // 载完再重画一次。不这么做的话，点名字要等一个网络往返才有反应。
+  if (PL.state !== 'ok') {
+    plLoad().then(function () { if (PC.open) pcRender(m); });
+  }
+}
+
+function pcRender(m) {
+  var box = $('#pcard');
+  if (!box) return;
+  clear(box);
+  var p = plFind(m);
+
+  var sheet = el('div', 'psheet');
+  sheet.onclick = function (e) { e.stopPropagation(); };
+
+  var head = el('div', 'phead');
+  head.appendChild(avatar(m));
+  var nm = el('div', 'pname', (p && p.co) || m.name);
+  nm.style.color = colorOf(m.sid);
+  head.appendChild(nm);
+  var x = el('button', 'pbtn', '✕');
+  x.setAttribute('aria-label', '关闭');
+  x.onclick = function () { pcClose(); };
+  head.appendChild(x);
+  sheet.appendChild(head);
+
+  var body = el('div', 'pbody');
+
+  if (p) {
+    // 「抓取于 N 天前」—— 这一行是这个页面最重要的一句话
+    var days = 0;
+    var at = new Date(String(p.at || '') + 'T00:00:00Z').getTime();
+    if (at) days = Math.max(0, Math.floor((Date.now() - at) / 86400000));
+    var when = el('div', 'pwhen' + (days > 30 ? ' old' : ''),
+      p.at ? ('资料抓取于 ' + p.at + '（' + (days ? days + ' 天前' : '今天') + '）' +
+              (days > 30 ? ' · 已经挺久了，可能不准' : ''))
+           : '不知道是什么时候抓的');
+    body.appendChild(when);
+
+    var grid = el('div', 'pgrid');
+    function cell(k, v, title) {
+      if (v === '' || v == null) return;
+      var c = el('div', 'pcell');
+      c.appendChild(el('div', 'k', k));
+      var vv = el('div', 'v', v);
+      if (title) vv.title = title;
+      c.appendChild(vv);
+      grid.appendChild(c);
+    }
+    cell('玩家等级', p.lv ? (String(p.lv) + (p.lvk ? ' · ' + levelKindName(p.lvk) : '')) : '');
+    cell('信用评级', p.rating ? (p.rating + (p.bracket ? '（' + p.bracket + '）' : '')) : '');
+    cell('排名', p.rank ? '#' + p.rank : '');
+    cell('EVA 排名', p.eva ? '#' + p.eva : '');
+    cell('公司净值', p.value ? pnum(p.value) : '', p.value ? String(p.value) : '');
+    cell('建筑价值', p.bval ? pnum(p.bval) : '', p.bval ? String(p.bval) : '');
+    cell('专利价值', p.pval ? pnum(p.pval) : '', p.pval ? String(p.pval) : '');
+    cell('负债', p.bonds ? pnum(p.bonds) : '', p.bonds ? String(p.bonds) : '');
+    cell('员工', p.workers ? pnum(p.workers) : '');
+    /*
+     * 建筑数和格子数【本来就可能对不上】：免费 / 季节建筑（沙滩集市那种）
+     * 不占格子。所以分成两格显示，并把免费那几栋标出来 ——
+     * 挤在一起写成"10 栋 / 9 格"看着就像个错。
+     */
+    cell('建筑', p.nb ? (p.nb + ' 栋' +
+      (p.nfree ? '（含 ' + p.nfree + ' 栋免费/季节）' : '')) : '');
+    cell('建筑格子', p.slots ? ((p.slots + (p.xslots || 0)) + ' 格' +
+      (p.xslots ? '（含额外 ' + p.xslots + '）' : '')) : '');
+    cell('生产加成', psign(p.prod));
+    cell('销售加成', psign(p.sales));
+    cell('休闲加成', psign(p.rec));
+    /*
+     * 接口给的是一个倍率（1.3 = 比基准多花 30%），显示成"1.3×"要人自己换算。
+     * 减 1 变成百分比才是它真正的意思：多付出的那部分。
+     */
+    cell('管理费用', (typeof p.admin === 'number' && p.admin)
+      ? (Math.round((p.admin - 1) * 1000) / 10 + '%') : '');
+    cell('政府订单档', (p.gov != null && p.gov >= 0) ? String(p.gov) : '');
+    cell('入坑', p.joined || '');
+    cell('重开于', p.reset || '');
+    cell('赞助者', p.sup ? '是' : '');
+    cell('管理员', p.mod ? '是' : '');
+    cell('已删除', p.del ? '是' : '');
+    body.appendChild(grid);
+
+    // 改过的旧名字。这个在存档里很有用 —— 改名之前的聊天记录是挂在旧名下的
+    if (p.prev && p.prev.length) {
+      body.appendChild(el('h3', null, '用过的名字'));
+      var pc = el('div', 'chips');
+      p.prev.forEach(function (x) { pc.appendChild(el('span', 'chip', x)); });
+      body.appendChild(pc);
+    }
+
+    /*
+     * 自我介绍。走的是和聊天正文【完全同一条】渲染路径 ——
+     * renderBody 全程 textContent / createTextNode，链接只认 http(s)，
+     * 图片只认白名单里的图床，:re-N: 会显示成产品名。
+     * 这是一段别人写的自由文本，任何时候都不能因为"它在资料页里"
+     * 就换一条更省事的路。
+     */
+    if (p.note) {
+      body.appendChild(el('h3', null, '自我介绍'));
+      var nb = el('div', 'pnote');
+      renderBody(nb, p.note, '');
+      body.appendChild(nb);
+    }
+
+    if (p.kinds && p.kinds.length) {
+      body.appendChild(el('h3', null, '都有些什么'));
+      var chips = el('div', 'chips');
+      p.kinds.forEach(function (k) { chips.appendChild(el('span', 'chip', k)); });
+      body.appendChild(chips);
+    }
+  } else {
+    var why = PL.state === 'loading' ? '正在读资料…'
+            : PL.state === 'fail' ? '这个站点还没有发布玩家资料。'
+            : '还没抓到这个人的资料。\n' +
+              '资料只覆盖游戏房里出现过的玩家，而且一天只抓几十个人，' +
+              '一轮要好几天 —— 过阵子再来看。';
+    body.appendChild(el('div', 'pnone', why));
+  }
+
+  // ---- 存档里 ----
+  body.appendChild(el('h3', null, '在存档里'));
+  var st = plArchiveStats(m, p);
+  var g2 = el('div', 'pgrid');
+  function cell2(k, v) {
+    if (!v) return;
+    var c = el('div', 'pcell');
+    c.appendChild(el('div', 'k', k));
+    c.appendChild(el('div', 'v', v));
+    g2.appendChild(c);
+  }
+  cell2('发言', st.n ? (st.n + ' 条') : '');
+  cell2('首次发言', st.first || '');
+  cell2('最后发言', st.last || '');
+  body.appendChild(g2);
+  if (st.partial) {
+    body.appendChild(el('div', 'pwhen', '（只统计了你这次载入的日期，不是全部存档）'));
+  }
+
+  // ---- 原来那个筛选，就在这儿 ----
+  var btns = el('div', 'pbtns');
+  var only = el('button', 'pbtn main', '只看他的消息');
+  (function (sid) {
+    only.onclick = function () {
+      sel.sender = sid;
+      pcClose();
+      document.body.classList.remove('nav');
+      refresh(true);
+    };
+  })(m.sid);
+  btns.appendChild(only);
+  var close = el('button', 'pbtn', '关闭');
+  close.onclick = function () { pcClose(); };
+  btns.appendChild(close);
+  body.appendChild(btns);
+
+  body.appendChild(el('div', 'pfoot',
+    '资料来自游戏公开的公司页面，只保留展示性的字段 —— ' +
+    '不收在线状态、所在地区、自我介绍和正在生产什么。' +
+    '不想被收录的，说一声就去掉。'));
+
+  sheet.appendChild(body);
+  box.appendChild(sheet);
+  box.onclick = function () { pcClose(); };
+}
+
+/**
+ * 存档统计：优先用发布数据里的（那是【全量】算的），
+ * 没有才退回数当前载入的这些天 —— 并且明说这是不全的。
+ * 不说的话，"发言 12 条"会被当成这人一共只说过 12 句。
+ */
+function plArchiveStats(m, p) {
+  if (p && p.msgs) {
+    return { n: p.msgs, first: p.first || '', last: p.last || '', partial: false };
+  }
+  var n = 0, lo = 0, hi = 0;
+  ALL.forEach(function (x) {
+    if (x.sid !== m.sid) return;
+    n++;
+    if (!lo || x.t < lo) lo = x.t;
+    if (x.t > hi) hi = x.t;
+  });
+  var d = function (t) { return t ? new Date(t).toISOString().slice(0, 10) : ''; };
+  return { n: n, first: d(lo), last: d(hi), partial: true };
+}
+
+/**
+ * 把认得出来的图片链接渲染成缩略图，挂在消息正文下面。
+ * 链接本身【照样保留】—— 图挂了的时候还能点开看。
+ */
+function appendImages(parent, urls) {
+  if (!urls.length) return;
+  var box = el('div', 'imgs');
+  urls.forEach(function (u) {
+    var a = el('a', 'imgwrap');
+    /*
+     * href 保留着不是摆设：中键、右键"新标签打开"、复制链接地址都还能用，
+     * 而且万一灯箱那段脚本出了问题，点击也还是能看到图 —— 降级到旧行为。
+     */
+    a.href = u; a.target = '_blank'; a.rel = 'noopener noreferrer nofollow';
+    a.onclick = function (e) {
+      // 让 Ctrl/⌘/中键 保持"新标签打开"的原生行为
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) return;
+      e.preventDefault();
+      lbOpen(u);
+    };
+    var img = el('img');
+    img.src = u;
+    img.alt = '玩家贴的图';
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.referrerPolicy = 'no-referrer';
+    /*
+     * 加载失败就把整块拿掉 —— 图床上的图是会过期的，
+     * 留一个碎图标既难看又让人以为是存档坏了。链接还在正文里，不影响。
+     */
+    img.onerror = function () { try { box.removeChild(a); } catch (e) {} };
+    a.appendChild(img);
+    box.appendChild(a);
+  });
+  parent.appendChild(box);
+}
+
+function renderBody(parent, text, q) {
+  var parts = [{ t: 'txt', s: String(text || '') }];
+  parts = splitBy(parts, /https?:\/\/[^\s<>"']+/g, 'url');
+  parts = splitBy(parts, /@[A-Za-z0-9_一-龥][\w.\-一-龥]*/g, 'at');
+  parts = splitBy(parts, RE_ICON, 'emo');
+  var pics = [];
+  parts.forEach(function (p) {
+    if (p.t === 'url') {
+      // 只接受 http(s)，其余按纯文字处理，绝不产生 javascript: 之类的链接
+      if (/^https?:\/\//i.test(p.s)) {
+        var a = el('a', null, p.s);
+        a.href = p.s; a.target = '_blank'; a.rel = 'noopener noreferrer nofollow';
+        parent.appendChild(a);
+        var pic = imageUrl(p.s);
+        if (pic && pics.indexOf(pic) < 0) pics.push(pic);
+      } else parent.appendChild(document.createTextNode(p.s));
+    } else if (p.t === 'at') {
+      parent.appendChild(el('span', 'mention', p.s));
+    } else if (p.t === 'emo') {
+      // 认得出来就显示产品名，认不出来原样显示原始码 —— 绝不留空
+      var pn = productName(p.s);
+      var chip = el('span', 'emote', pn || p.s);
+      if (pn) chip.title = p.s;            // 悬停能看到原始的 :re-30:
+      parent.appendChild(chip);
+    } else {
+      appendText(parent, p.s, q);
+    }
+  });
+  appendImages(parent, pics);
+}
+
+function avatar(m) {
+  var initial = (m.name.charAt(0) || '?').toUpperCase();
+  if (m.logo && m.logo.indexOf(AVATAR_HOST) === 0) {
+    var img = el('img', 'av');
+    img.src = m.logo; img.alt = ''; img.loading = 'lazy'; img.referrerPolicy = 'no-referrer';
+    img.onerror = function () {
+      var ph = el('div', 'av ph', initial);
+      ph.style.background = colorOf(m.sid);
+      if (img.parentNode) img.parentNode.replaceChild(ph, img);
+    };
+    return img;
+  }
+  var ph = el('div', 'av ph', initial);
+  ph.style.background = colorOf(m.sid);
+  return ph;
+}
+
+// ---------- 筛选与渲染 ----------
+/**
+ * 重建排序数组和侧栏统计。只在【载入了新数据】时跑，不随搜索跑。
+ *
+ * 消息一旦入库就不会变，所以排序一次就够了。以前是每次筛选都把结果重排一遍，
+ * 二十万条时每敲一个字都要 O(n log n)。
+ */
+function rebuild() {
+  SORTED = [];
+  ALL.forEach(function (m) { SORTED.push(m); });
+  SORTED.sort(function (a, b) { return a.t - b.t || a.id - b.id; });
+
+  // 按房间分桶。分完每桶依然有序（是从有序数组里顺序推进去的），
+  // 所以"只看某个房间"这个最常见的情况可以直接用现成数组，一次拷贝都不用。
+  BYROOM = {};
+  for (var i = 0; i < SORTED.length; i++) {
+    var m = SORTED[i];
+    (BYROOM[m.room] || (BYROOM[m.room] = [])).push(m);
+  }
+  STATS = null;      // 侧栏统计跟着作废
+  DIRTY = false;
+}
+
+/** 当前房间的消息（已按时间排好）。 */
+function roomMsgs() {
+  if (DIRTY) rebuild();
+  return BYROOM[sel.room] || [];
+}
+
+/** 索引里有哪些房间、各多少条 —— 来自索引而不是已载入的数据。
+ *  这一点很关键：还没载入的房间也必须在侧栏里出现，否则你根本无从选它。 */
+function indexRooms() {
+  var out = {};
+  if (INDEX) {
+    (INDEX.days || []).forEach(function (d) {
+      out[d.room] = (out[d.room] || 0) + (d.n || 0);
+    });
+  }
+  // 只在快通道里出现、还没进索引的房间也要列出来（刚加的聊天室就是这种）。
+  // 索引里已有的以索引为准 —— 那是"存档总量"，recent 只是最近一小包。
+  Object.keys(RECENT_ROOMS).forEach(function (r) {
+    if (!out[r]) out[r] = RECENT_ROOMS[r];
+  });
+  return out;
+}
+
+/** 当前房间的日期列表（索引里的，倒序）。 */
+function roomDays() {
+  if (!INDEX) return [];
+  return (INDEX.days || []).filter(function (d) { return d.room === sel.room; });
+}
+
+/** 选一个存在的房间：优先沿用上次的，其次 ZH，再不行就第一个。 */
+function pickRoom() {
+  var rooms = indexRooms(), keys = Object.keys(rooms).sort();
+  if (!keys.length) return sel.room;
+  if (rooms[sel.room]) return sel.room;
+  if (rooms.ZH) return 'ZH';
+  return keys[0];
+}
+
+/** 侧栏用的统计。结果缓存起来，搜索时直接复用。 */
+function stats() {
+  if (STATS) return STATS;
+  if (DIRTY) rebuild();
+
+  // 只统计【当前房间】—— 侧栏里的发送者、领域、时间跨度必须和你眼前看到的
+  // 是同一批消息。混着别的房间算，数字对不上，人会以为是坏了。
+  var base = roomMsgs();
+  var senders = new Map(), days = {}, realms = {};
+  for (var i = 0; i < base.length; i++) {
+    var m = base[i];
+    realms[m._r] = (realms[m._r] || 0) + 1;
+    days[m._d] = 1;
+    var e = senders.get(m.sid);
+    if (e) { e.n++; e.name = m.name; }
+    else senders.set(m.sid, { name: m.name, sid: m.sid, n: 1 });
+  }
+  var list = [];
+  senders.forEach(function (v) { list.push(v); });
+  list.sort(function (a, b) { return b.n - a.n; });
+
+  // 时间跨度直接取首尾两条 —— 数组本来就是按时间排好的。
+  //
+  // 这里原本写的是 Math.max.apply(null, ts)，那是把每一条消息的时间戳当成一个
+  // 函数参数展开。参数个数有上限，实测 15 万条就会抛 RangeError，
+  // 而异常正好发生在渲染路径上，整个页面会卡死不再响应。
+  var hrs = 0;
+  if (base.length) {
+    hrs = (base[base.length - 1].t - base[0].t) / 3600000;
+    if (!(hrs >= 0)) hrs = 0;
+  }
+
+  STATS = { senders: list, realms: realms, n: base.length,
+            days: Object.keys(days).length, hrs: hrs };
+
+  // 载入的数据里压根没有当前选中的领域（比如默认的 R1）就回落到「全部」，
+  // 否则会看到一个空页面还不知道为什么。
+  if (sel.realm != null && !realms[sel.realm]) sel.realm = null;
+
+  return STATS;
+}
+
+/* ======================= 深搜：不把整个存档装进内存 =======================
+ *
+ * 老做法：想搜全部历史，就得先点「载入全部」把所有日文件 expand 成对象塞进 ALL。
+ * 实测 ZH 一年 = 1,277,135 条 → 11 秒、584 MB 堆。手机必崩。
+ *
+ * 新做法两条，合起来解决问题：
+ *
+ *   ① 从【最新的一天】往回翻，凑够 DEEP_TARGET 条命中就停。
+ *      实测：要最新 500 条命中 = 63 毫秒、0 MB、只翻了 4/365 天。
+ *      道理很简单 —— 你搜一个词，绝大多数时候想看的是最近的那批，
+ *      不是一次把一年的都摆出来。不够再点「继续找更早的」。
+ *
+ *   ② 扫完就扔。每天解析出来的消息只留【命中的】，其余当场丢掉，
+ *      不进 ALL、不进任何长期容器。实测扫全年也只有 36 MB
+ *      （而且这个数只跟"命中多少条"有关，跟存档多大无关）。
+ *
+ * ⚠️ 一个【故意没做】的优化，写在这里免得以后有人"顺手加上"：
+ *   本来可以在解析之前先在日文件的原始文本上 indexOf 一次，不含就整天不解析
+ *   （对生僻词是 12 倍加速）。实测踩过坑：搜 BFR 会返回 0 条，
+ *   而正确答案是 83,981 条 —— 因为 "BFR" 这个名字【不在原文里】，
+ *   原文只有 :re-94:，产品名是 expand() 里由图标码翻出来的。
+ *   它不报错，就是安静地搜不到。
+ *   所以这里坚持走同一个 expand() + 同一个 _s —— 浏览和搜索用同一套判定，
+ *   永远不会出现"页面上看得到、搜索搜不到"。
+ *   真要加预筛，必须把查询词展开成"它自己 + 对应的图标码"一起找，并且配测试。
+ */
+var DEEP_TARGET = 500;        // 一轮凑够多少条命中就停
+var DEEP_MORE   = 500;        // 点「继续找更早的」再加多少
+var DEEP_BATCH  = 4;          // 一批并发拉几天（和 loadDays 保持一致）
+var DEEP = null;
+
+/** 当前深搜的结果适用于现在这个查询吗？不适用就当没有。 */
+function deepMsgs() {
+  if (!DEEP) return null;
+  if (DEEP.room !== sel.room) return null;
+  if (DEEP.q !== sel.q.toLowerCase()) return null;
+  return DEEP.msgs;
+}
+
+function deepStop() {
+  if (DEEP) DEEP.cancel = true;
+}
+
+/**
+ * 开一轮深搜。同一个词重复调用不会重开，只会把目标条数往上加。
+ * more = 这次要再多找几条（不给就是从头找 DEEP_TARGET 条）。
+ */
+function deepSearch(more) {
+  var q = sel.q.toLowerCase();
+  if (!q) { deepStop(); DEEP = null; renderDeep(); return Promise.resolve(); }
+  if (!INDEX) return Promise.resolve();
+
+  if (DEEP && DEEP.q === q && DEEP.room === sel.room) {
+    if (DEEP.running) return Promise.resolve();
+    if (DEEP.exhausted) return Promise.resolve();
+    DEEP.target = DEEP.msgs.length + (more || DEEP_MORE);
+  } else {
+    deepStop();
+    // 从最新的一天往回排。已经完整载入内存的天直接跳过 ——
+    // 那些消息本来就在 ALL 里，applyFilters 已经会筛到它们。
+    var days = roomDays().slice().sort(function (a, b) {
+      return a.day < b.day ? 1 : (a.day > b.day ? -1 : 0);
+    });
+    DEEP = {
+      q: q, room: sel.room, msgs: [], seen: {},
+      queue: days, total: days.length, scanned: 0, fetched: 0, failed: 0,
+      target: more || DEEP_TARGET, running: false, cancel: false, exhausted: false,
+    };
+  }
+  return deepRun(DEEP);
+}
+
+function deepRun(d) {
+  if (d.running) return Promise.resolve();
+  d.running = true;
+  renderDeep();
+
+  function batch() {
+    if (d !== DEEP || d.cancel) return Promise.resolve();
+    if (d.msgs.length >= d.target) return Promise.resolve();
+
+    // 先把已经在内存里的天跳掉（不发请求）
+    while (d.queue.length && !needLoad(d.queue[0])) { d.queue.shift(); d.scanned++; }
+    if (!d.queue.length) { d.exhausted = true; return Promise.resolve(); }
+
+    var take = d.queue.splice(0, DEEP_BATCH);
+    d.scanned += take.length;
+    var before = d.msgs.length;
+
+    return Promise.all(take.map(function (it) {
+      return getPack(DATA + '/d/' + encodeURIComponent(it.room) + '/' +
+                     encodeURIComponent(it.day) + '.json', true)
+        .then(function (pack) {
+          d.fetched++;
+          var msgs = expand(pack);
+          for (var i = 0; i < msgs.length; i++) {
+            var m = msgs[i];
+            // 和浏览用的是同一个 _s —— 这是"页面上看得到就一定搜得到"的保证
+            if (m._s.indexOf(d.q) < 0) continue;
+            if (ALL.has(m.id) || d.seen[m.id]) continue;
+            d.seen[m.id] = 1;
+            d.msgs.push(m);
+          }
+          // msgs / pack 这一轮就丢掉 —— 这就是"扫完就扔"，不往 ALL 里塞
+        })
+        .catch(function () { d.failed++; });
+    })).then(function () {
+      if (d !== DEEP) return;
+      renderDeep();
+      // 只在真的多出东西时才重画，免得扫几百天就重排几百次
+      if (d.msgs.length > before) refreshKeepScroll();
+      return batch();
+    });
+  }
+
+  return batch().then(function () {
+    if (d !== DEEP) return;
+    d.running = false;
+    if (!d.queue.length) d.exhausted = true;
+    renderDeep();
+    refreshKeepScroll();
+  });
+}
+
+/*
+ * 深搜是一边翻一边往里插结果的，而插进来的都是【更早】的消息 ——
+ * 它们排在前面。renderFeed 每次都是清空重画，滚动位置会归零，
+ * 于是你正看着的地方会突然跳到顶部。
+ * 所以按"离底部多远"来恢复，和「载入更早的」那个按钮用的是同一招。
+ */
+function refreshKeepScroll() {
+  var f = $('#feed');
+  var fromBottom = f ? (f.scrollHeight - f.scrollTop) : 0;
+  refresh(false);
+  if (f) {
+    requestAnimationFrame(function () {
+      f.scrollTop = Math.max(0, f.scrollHeight - fromBottom);
+    });
+  }
+}
+
+/** 搜索栏下面那条状态/操作条。 */
+function renderDeep() {
+  var bar = $('#deep');
+  if (!bar) return;
+  clear(bar);
+  var d = DEEP;
+  if (!d || d.q !== sel.q.toLowerCase() || d.room !== sel.room) {
+    bar.className = '';
+    return;
+  }
+  bar.className = 'on';
+
+  var n = el('b', null, d.msgs.length.toLocaleString());
+  bar.appendChild(el('span', null, '更早的存档里又找到 '));
+  bar.appendChild(n);
+  bar.appendChild(el('span', null, ' 条'));
+
+  if (d.running) {
+    bar.appendChild(el('span', null, '· 已翻 ' + d.scanned + '/' + d.total + ' 天…'));
+    var stop = el('button', null, '停');
+    stop.onclick = function () { deepStop(); };
+    bar.appendChild(stop);
+    return;
+  }
+
+  if (d.exhausted) {
+    bar.appendChild(el('span', null, '· 已经找遍这个房间的全部 ' + d.total + ' 天'));
+  } else {
+    var left = d.queue.length;
+    bar.appendChild(el('span', null, '· 翻到第 ' + d.scanned + '/' + d.total +
+                                     ' 天就够了，还有 ' + left + ' 天没找'));
+    var more = el('button', null, '继续找更早的');
+    more.onclick = function () { deepSearch(DEEP_MORE); };
+    bar.appendChild(more);
+  }
+  if (d.failed) {
+    bar.appendChild(el('span', null, '·（' + d.failed + ' 个文件没读到）'));
+  }
+}
+
+/*
+ * ===================== 每日 AI 摘要 =====================
+ *
+ * 采集端每天给【已经结束的那一天】生成一段话，发成 data/ai/<房间>/<日期>.json。
+ * 这里只是多读一个静态文件 —— 页面【不会】去调任何模型，也没有任何 key。
+ * （CSP 是 connect-src 'self'，就算想调也调不出去，这是有意为之。）
+ *
+ * 三条规矩：
+ *   1. 只在【选中了某一天】时出现。没选具体日期就没有"这一天"可总结。
+ *   2. 404 = 那天没有摘要，很正常（没开、跳过了、生成失败）。
+ *      记下来，不要每次重画都再敲一次 404。
+ *   3. 标识必须一眼可见，而且【折不掉】—— 折叠只收正文。
+ */
+var AI_MEMO = {};        // 'room|day' -> 对象 / false（没有）/ 'wait'（正在取）
+/*
+ * 正文展开着吗（整页记忆，不是每天各记一份）。
+ *
+ * ⚠️ 手机上默认【收起】。
+ * 这张卡在 #bar 和 #feed 中间，手机屏幕本来就矮 ——
+ * 展开状态下它能占掉三分之一还多，剩下的地方翻两条消息就到底了，
+ * 实际体验是"一打开这一天，屏幕被总结糊住了"。
+ *
+ * 电脑上默认展开：那边地方够，总结正是最该先看到的东西。
+ * 收起状态下横幅还在，所以"这是 AI 写的"这件事任何时候都没被藏起来。
+ */
+/*
+ * 要不要在正文里标出"进了选读的那些"。默认开 ——
+ * 这个功能的全部意义就是让选择可核对，默认关掉等于没做。
+ */
+var AI_MARK = true;
+
+/** 当前这一天的摘要依据了哪些消息 id。没有就返回 null。 */
+function aiSrcSet() {
+  var k = aiKeyOf();
+  if (!k) return null;
+  var o = AI_MEMO[k];
+  if (!o || o === 'wait' || !o.src || !o.src.length) return null;
+  /*
+   * ⚠️ 缓存【不要挂在 obj 上】。
+   * 那个对象是从 JSON 读来的，别处可能会把它再序列化一遍 ——
+   * 挂上去的 Set 会变成 {}，而 {} 没有 .has，
+   * 于是标记功能悄悄失效（或者当场报错）。
+   * 单独存一份，只按 key 认。
+   */
+  if (AI_SET.k !== k) {
+    var set = new Set();
+    for (var i = 0; i < o.src.length; i++) set.add(Number(o.src[i]));
+    AI_SET = { k: k, set: set };
+  }
+  return AI_SET.set;
+}
+var AI_SET = { k: null, set: null };
+
+var AI_OPEN = (function () {
+  try { return !window.matchMedia('(max-width:860px)').matches; }
+  catch (e) { return true; }        // 判断不了就按电脑处理
+})();
+
+function aiKeyOf() {
+  return (sel.day && sel.room) ? (sel.room + '|' + sel.day) : null;
+}
+
+/** 取一天的摘要。取到、或者确认没有，都会重画一次卡片。 */
+function loadAiSummary(room, day) {
+  var k = room + '|' + day;
+  if (AI_MEMO[k] !== undefined) return;          // 已有结论（含"没有"）
+  AI_MEMO[k] = 'wait';
+  /*
+   * ⚠️ reuse 必须是 false（= 带时间戳 + no-store）。
+   *
+   * 原来写的是 true，理由是"摘要生成一次就永不改变，重下毫无意义"。
+   * **那个前提是错的** —— 提示词要反复调，调完就要重做那一天。
+   * 结果是：采集端明明写了新的，浏览器还拿着旧的那份不放，
+   * 而这种"写了但看不见"最容易被误判成"根本没写进去"。
+   *
+   * 代价：切一次日期多一个几百字节的请求。摘要就那么点大，
+   * 拿这个换"改完立刻看得到"，太值了。
+   *
+   * 同一天只会请求一次 —— AI_MEMO 记着结果，重画不会重复发。
+   */
+  getPack(DATA + '/ai/' + encodeURIComponent(room) + '/' +
+          encodeURIComponent(day) + '.json', false)
+    .then(function (obj) {
+      AI_MEMO[k] = (obj && obj.text) ? obj : false;
+    })
+    .catch(function () {
+      AI_MEMO[k] = false;                        // 没有就是没有，不报错打扰人
+    })
+    .then(function () {
+      if (aiKeyOf() === k) renderAiCard();       // 期间可能已经切走了
+    });
+}
+
+function renderAiCard() {
+  var box = $('#aicard');
+  if (!box) return;
+  clear(box);
+  var k = aiKeyOf();
+  if (!k) { box.className = ''; return; }        // 没选具体某天
+
+  loadAiSummary(sel.room, sel.day);
+  var obj = AI_MEMO[k];
+  if (!obj || obj === 'wait') { box.className = ''; return; }
+
+  box.className = 'on';
+
+  // ---- 横幅：这一条永远在，折叠也收不掉 ----
+  var head = el('div', 'aihead');
+  /*
+   * 先写清楚【这是什么】，再写警告。
+   *
+   * 原来第一句直接是"本段由 AI 生成"—— 那是个免责声明，不是名字。
+   * 结果这块东西在页面上没有名字：知道它是什么的人才看得懂它是什么。
+   * 名字要能被指认（"你看 AI 总结里说…"），免责声明做不到这件事。
+   */
+  /*
+   * 人工挑的和机器读全天的，**名字不能一样** —— 它们的可信范围不同。
+   *
+   * 「AI 总结」这四个字本身就在暗示"这是当天全貌"，
+   * 而人工挑选的那份从来不是。一大半"断章取义"的指责起点就在这儿：
+   * 读者以为它是全文摘要。名字改对了，期待就对了。
+   */
+  var manual = Number(obj.manual);
+  head.appendChild(el('span', 'aititle', manual ? 'AI 选读' : 'AI 总结'));
+  head.appendChild(el('span', null, '🤖 由 AI 生成'));
+  if (manual) {
+    head.appendChild(el('span', 'warn',
+      '· 人工挑选 ' + Number(obj.n_src || 0).toLocaleString() + '/' +
+      Number(obj.total || 0).toLocaleString() + ' 条，不是当天全貌'));
+  }
+  /*
+   * 免责声明有长短两版，按屏幕宽度切换 —— **不是"手机上就不显示"**。
+   * 手机屏窄，长句会把标题和按钮挤到第二行；但为了省一行就把
+   * "可能有误"整句删掉，等于在最容易被当真的地方拿掉了唯一的提醒。
+   * 宁可短，不能没有。
+   */
+  head.appendChild(el('span', 'warn warn-long',
+    '· 可能有误、可能遗漏，以下方原始记录为准'));
+  head.appendChild(el('span', 'warn warn-short', '· 可能有误'));
+  head.appendChild(el('span', 'spacer'));
+  /*
+   * 「标出进了选读的那些」——【在全文里内联标】，不是单独开一个筛选模式。
+   *
+   * 这一点是关键：读者滚过去的时候，被标的和没被标的挨在一起，
+   * **遗漏是默认可见的**，不需要他主动去点"只看没选的"。
+   * 单独做一个筛选模式反而更差：要主动切换，等于没人会看。
+   */
+  var ids = aiSrcSet();
+  if (ids && ids.size) {
+    var mk = el('button', 'aitoggle' + (AI_MARK ? ' on' : ''),
+      (AI_MARK ? '✓ ' : '') + '在下方标出这 ' + ids.size.toLocaleString() + ' 条');
+    mk.title = '把进了这份选读的消息在下面的记录里标出来。\n' +
+               '没被标的就是没选进去的 —— 一起看，才知道漏了什么。';
+    mk.onclick = function () { AI_MARK = !AI_MARK; refreshKeepScroll(); };
+    head.appendChild(mk);
+  }
+
+  var tg = el('button', 'aitoggle', AI_OPEN ? '收起' : '展开');
+  tg.onclick = function () { AI_OPEN = !AI_OPEN; renderAiCard(); };
+  head.appendChild(tg);
+  box.appendChild(head);
+
+  if (!AI_OPEN) return;
+
+  // ---- 正文：模型写的字，只用 textContent ----
+  var body = el('div', 'aibody');
+  body.textContent = String(obj.text || '');
+  box.appendChild(body);
+
+  /*
+   * 脚注写清楚"它看的是什么"。没有出处的摘要没法验证，那就只是个好看的猜测：
+   * 这一天一共多少条、其中多少条被喂进去、用的哪个模型、什么时候生成的。
+   */
+  var foot = el('div', 'aifoot');
+  var n = Number(obj.n_src || 0), tot = Number(obj.total || 0);
+  /*
+   * 房间不一样，"依据了什么"也不一样：
+   *   · 消息少的房间（社交）整天原样读，没有筛
+   *   · 消息多的房间要先按游戏相关性筛一遍
+   * 所以这句话【按数字来判断】，不写死。
+   * 写死成"和游戏有关的 N 条"的话，没筛的房间会被描述成筛过 ——
+   * 那是在骗人，而且骗的正是"这段总结可信到什么程度"这件事。
+   */
+  /*
+   * 人工挑的和机器筛的，来源不一样，可信度也不一样 —— 必须让人看得出来。
+   * 都写成"依据 N 条"的话，一份人工精选和一份机器粗筛长得一模一样，
+   * 而它们值得的信任程度差很远。
+   */
+  if (Number(obj.manual)) {
+    var man = el('span', null, '✍️ 素材由人工挑选');
+    man.style.color = '#86efac';
+    foot.appendChild(man);
+  }
+  foot.appendChild(el('span', null,
+    (Number(obj.manual)
+      ? ('从这一天 ' + tot.toLocaleString() + ' 条里挑了 ' + n.toLocaleString() + ' 条')
+      : n >= tot ? ('依据这一天全部 ' + tot.toLocaleString() + ' 条')
+              : ('依据这一天 ' + tot.toLocaleString() + ' 条里的 ' +
+                 n.toLocaleString() + ' 条'))));
+  /*
+   * 消息特别多的那天会超出单次字符上限，只有较晚的一段被读到。
+   * 这件事【必须写出来】：一段看着完整、其实只覆盖半天的总结，
+   * 比没有总结更糟 —— 它会让人以为自己已经知道那天发生了什么。
+   */
+  if (Number(obj.truncated)) {
+    var cut = el('span', null, '⚠️ 这天消息太多，只读了较晚的一段');
+    cut.style.color = 'var(--warn)';
+    foot.appendChild(cut);
+  }
+  if (obj.model) foot.appendChild(el('span', null, '模型 ' + obj.model));
+  if (obj.generated) {
+    foot.appendChild(el('span', null, '生成于 ' + fmtFull(obj.generated)));
+  }
+  box.appendChild(foot);
+}
+
+function applyFilters() {
+  if (DIRTY) rebuild();
+  var q = sel.q.toLowerCase();
+
+  // 房间永远是选中的，所以底子就是那个房间的桶（已排好序）。
+  // 没有别的筛选条件时直接用它，一次拷贝都不做。
+  var base = roomMsgs();
+  if (!q && !sel.day && sel.sender == null && !realmHides()) {
+    view = base;
+    limit = 400;
+    return;
+  }
+
+  // base 已经有序，挑出来的子集自然也有序，不需要再排
+  var hideRealm = realmHides();
+  view = [];
+  for (var i = 0; i < base.length; i++) {
+    var m = base[i];
+    if (sel.day && m._d !== sel.day) continue;
+    if (sel.sender != null && m.sid !== sel.sender) continue;
+    if (hideRealm && m._r !== sel.realm) continue;
+    if (q && m._s.indexOf(q) < 0) continue;
+    view.push(m);
+  }
+
+  /*
+   * 深搜捞回来的那些消息【不在 ALL 里】—— 这是故意的，不然内存就又长回去了。
+   * 所以在这里单独并进来。它们已经按 q 筛过，但别的筛选条件（某一天 / 某个人 /
+   * 领域）还得照样过一遍，否则"点某天"之后会冒出别的天的结果。
+   */
+  var extra = deepMsgs();
+  if (extra && extra.length) {
+    var merged = false;
+    for (var k = 0; k < extra.length; k++) {
+      var e = extra[k];
+      /*
+       * ⚠️ 这里要【每次都】重新查 ALL，不能只在深搜捞到的那一刻查一次。
+       * 场景：先搜了一个词（深搜从老日子里捞回来几条），之后又点了那一天、
+       * 或者点了「全部」把那天整个载进 ALL —— 同一条消息就同时存在于
+       * ALL 和 DEEP.msgs 里，view 里会出现两遍。
+       */
+      if (ALL.has(e.id)) continue;
+      if (sel.day && e._d !== sel.day) continue;
+      if (sel.sender != null && e.sid !== sel.sender) continue;
+      if (hideRealm && e._r !== sel.realm) continue;
+      view.push(e);
+      merged = true;
+    }
+    // 并进来之后顺序就乱了，重排一次。深搜结果最多几千条，这一步毫秒级。
+    if (merged) view.sort(function (a, b) { return a.t - b.t || a.id - b.id; });
+  }
+  limit = 400;
+}
+
+function renderFeed() {
+  var feed = $('#feed');
+  clear(feed);
+  if (!ALL.size) return;
+  if (!view.length) {
+    var ph = el('div', 'placeholder');
+    ph.appendChild(el('div', 'big', '🔍'));
+    ph.appendChild(el('div', '没有匹配的消息'));
+    feed.appendChild(ph);
+    return;
+  }
+  var start = Math.max(0, view.length - limit);
+  if (start > 0) {
+    var b = el('button', null, '↑ 载入更早的 ' + Math.min(400, start) + ' 条（还有 ' + start + ' 条）');
+    b.id = 'more';
+    b.onclick = function () {
+      var keep = feed.scrollHeight - feed.scrollTop;
+      limit += 400; renderFeed(); feed.scrollTop = feed.scrollHeight - keep;
+    };
+    feed.appendChild(b);
+  }
+
+  var dimOn = sel.realm != null && sel.dimOthers;
+  // 只在开着标记、且这一天确实有摘要时才标
+  var markSet = AI_MARK ? aiSrcSet() : null;
+  var lastDay = '', lastSid = null, lastT = 0;
+  for (var i = start; i < view.length; i++) {
+    var m = view[i], d = m._d || dayOf(m.t), first = false;
+    if (d !== lastDay) {
+      var sep = el('div', 'daysep');
+      sep.appendChild(el('span', null, dayLabel(d)));
+      feed.appendChild(sep);
+      lastDay = d; lastSid = null; first = true;
+    }
+    var grouped = (m.sid === lastSid && m.t - lastT < 300000 && !first);
+    lastSid = m.sid; lastT = m.t;
+
+    // 变暗只在"选了某个领域且开着显示其他"时发生。隐藏模式下这些消息
+    // 压根不在 view 里，也就轮不到这一句。
+    var row = el('div', 'msg' + (grouped ? '' : ' first') +
+                        ((m.retracted || m.deleted) ? ' gone' : '') +
+                        ((markSet && markSet.has(m.id)) ? ' picked' : '') +
+                        ((dimOn && m._r !== sel.realm) ? ' dim' : ''));
+    if (grouped) {
+      row.appendChild(el('div', 'gutter', hmOf(m.t)));
+    } else {
+      row.appendChild(avatar(m));
+    }
+    var content = el('div', 'content');
+    if (!grouped) {
+      var head = el('div', 'head');
+      var who = el('span', 'who', m.name);
+      who.style.color = colorOf(m.sid);
+      who.title = '看看这个人';
+      /*
+       * 点名字 = 打开资料页。
+       *
+       * 原来这里直接切「只看这个人」。那个功能没丢，它在资料面板里
+       * 那个「只看他的消息」按钮上 —— 多一次点击，换来的是
+       * 点之前就知道自己要点的是谁。
+       * 已经在只看某人的状态下，再点他的名字就退回全部 ——
+       * 不然"取消筛选"要绕一圈，那是原来一下就能做到的事。
+       */
+      (function (mm) {
+        who.onclick = function () {
+          if (sel.sender === mm.sid) { sel.sender = null; refresh(true); return; }
+          pcOpen(mm);
+        };
+      })(m);
+      head.appendChild(who);
+      if (m.mod) head.appendChild(el('span', 'tag mod', '管理'));
+      if (m.sup) head.appendChild(el('span', 'tag sup', '赞助'));
+      if (m.cert) head.appendChild(el('span', 'tag cert', '证书 ' + m.cert));
+      head.appendChild(el('span', 'tag realm', 'R' + m._r));
+      var ts = el('span', 'ts', timeOf(m.t));
+      ts.title = new Date(m.t).toString();
+      head.appendChild(ts);
+      // 一次只显示一个房间，每条都挂个一样的房间标签纯属噪音
+      content.appendChild(head);
+    }
+    var body = el('div', 'body');
+    renderBody(body, m.body, sel.q);
+    content.appendChild(body);
+
+    if (m.pinned || m.retracted || m.deleted) {
+      var fl = el('div', 'flags');
+      if (m.pinned) fl.appendChild(el('span', 'flag pin', '📌 置顶'));
+      if (m.retracted) fl.appendChild(el('span', 'flag del', '已撤回'));
+      if (m.deleted) fl.appendChild(el('span', 'flag del', '已删除'));
+      content.appendChild(fl);
+    }
+    row.appendChild(content);
+    feed.appendChild(row);
+  }
+}
+
+/**
+ * 日期列表 —— 只列【当前房间】的日期。
+ *
+ * 以前这里把三个房间的日期混在一起列，点其中一个会同时钉住日期和房间，
+ * 而「全部已载入」只清日期不清房间 —— 于是就锁死了：另外两个房间的消息
+ * 明明已经在内存里，却怎么点都出不来。
+ * 现在房间在上面单选，这里只是那个房间内部的日期，两件事不再互相影响。
+ */
+function renderFiles() {
+  var box = $('#files');
+  clear(box);
+  if (!INDEX) return;
+
+  var mine = roomDays();
+  var allRow = el('div', 'row' + (sel.day === null ? ' on' : ''));
+  allRow.appendChild(el('span', 'lbl', '本房间全部已载入'));
+  allRow.appendChild(el('span', 'n', roomMsgs().length));
+  allRow.onclick = function () { sel.day = null; refresh(true); };
+  box.appendChild(allRow);
+
+  if (!mine.length) {
+    var none = el('div', 'row');
+    // 刚加的聊天室会短暂处于这个状态：消息已经从快通道来了，
+    // 但按天分的日文件要等整点那次完整发布才生成。
+    none.appendChild(el('span', 'lbl',
+      roomMsgs().length ? '（日文件还没发布，先看最近这一小包）'
+                        : '（这个房间还没有已发布的日期）'));
+    box.appendChild(none);
+    return;
+  }
+
+  mine.forEach(function (d) {
+    var k = d.room + '|' + d.day;
+    var on = LOADED.has(k);
+    var stale = on && LOADED.get(k).got < (d.n || 0);   // 载过，但之后又有新消息
+    var r = el('div', 'row' +
+      (sel.day === d.day ? ' on' : (on && !stale ? ' done' : '')));
+    r.appendChild(el('span', 'lbl',
+      d.day + (stale ? ' ↻ 有更新' : on ? ' ✓' : '')));
+    r.appendChild(el('span', 'n', d.n));
+    if (stale) r.style.color = 'var(--warn)';
+    r.onclick = function () {
+      if (on && !stale) { sel.day = d.day; refresh(true); }
+      else loadDays([d]);
+    };
+    box.appendChild(r);
+  });
+}
+
+/**
+ * 切换房间：换房间 → 清掉房间内部的筛选 → 载入这个房间最近几天。
+ *
+ * 日期、发送者都是"房间内部"的概念，换了房间它们必然失效，所以一并清掉。
+ * 领域是跨房间的偏好，不动它。
+ */
+/*
+ * ⚠️ 换房间【绝对不能等网络】。
+ *
+ * 线上反馈（国内用户，GitHub 部署）：点房间按钮没反应，
+ * 而日期列表却跟着变了 —— 一半动一半不动，看着像界面坏了。
+ *
+ * 原因就在这个函数的最后一行：以前是
+ *     return loadDays(...).then(function () { refresh(true); });
+ * 也就是**先等文件下载完，再画界面**。而 refresh() 才是
+ * 画房间高亮和消息列表的那一步（renderSidebar 在它里面）。
+ * 于是网络一挂：
+ *
+ *     sel.room 换了            ← 状态其实是对的
+ *     renderFiles() 跑了       ← 所以日期列表变了
+ *     refresh() 永远等不到     ← 高亮和消息列表原地不动
+ *
+ * 用户看到的就是"点了没反应"，而且**他会以为数据没下来**——
+ * 实际上那个房间的消息很多时候【已经在内存里了】（快通道那一包是全房间的）。
+ *
+ * 现在改成：**先画，后载。** 界面立刻切过去，能显示多少显示多少，
+ * 文件在后台补。网络不通最多是内容少几天，而不是整个页面装死。
+ */
+function switchRoom(r) {
+  deepStop();            // 上一轮还在给旧房间拉文件，先停
+  if (r === sel.room) return;
+  sel.room = r;
+  sel.day = null;
+  sel.sender = null;
+  STATS = null;
+  savePref();
+  renderFiles();
+  refresh(true);         // ← 立刻切过去，不等网络
+  return loadDays(roomDays().slice(0, 3));
+}
+
+function renderSidebar() {
+  var S = stats();               // 已缓存，搜索时不会重算
+
+  // 房间是单选，而且【列表来自索引不是来自已载入的数据】。
+  // 这一条是这次那个 bug 的根：以前从已载入的消息里统计房间，
+  // 而开页只载最近三天 —— 那三天可能全是同一个房间的，
+  // 于是另外两个房间在侧栏里压根不出现，看上去就像"数据没保存下来"。
+  var rc = indexRooms();
+  var rbox = $('#rooms'); clear(rbox);
+  Object.keys(rc).sort().forEach(function (r) {
+    var c = el('div', 'chip' + (sel.room === r ? ' on' : ''),
+               roomLabel(r) + ' ' + rc[r].toLocaleString());
+    c.title = r;                        // 悬停看得到原始的房间标识
+    c.onclick = function () { switchRoom(r); };
+    rbox.appendChild(c);
+  });
+
+  /*
+   * ---- 正文列宽：正常 / 紧凑 ----
+   *
+   * 换档【只改一个 CSS 类】，不重画消息流 —— 所以这里不调 refresh()。
+   * 这是有意的：录视频的时候常常是滚到某一段再切档，
+   * 重画会把滚动位置弹回去，那一下正好毁掉一条镜头。
+   */
+  var wbox = $('#widthchips'); clear(wbox);
+  [['normal', '正常'], ['compact', '紧凑']].forEach(function (p) {
+    var c = el('div', 'chip' + (sel.width === p[0] ? ' on' : ''), p[1]);
+    c.title = p[0] === 'compact' ? '正文列 440px —— 录视频用，长消息不会横着拖出画面'
+                                 : '正文列 880px —— 平时看存档';
+    c.onclick = function () {
+      if (sel.width === p[0]) return;
+      sel.width = p[0];
+      savePref();
+      applyWidth();
+      renderSidebar();                  // 只重画侧栏，消息流一个字不动
+    };
+    wbox.appendChild(c);
+  });
+  $('#widthnote').textContent = sel.width === 'compact'
+    ? '正文 440px。录视频用 —— 一行短，长消息不会横着拖出画面。'
+    : '正文 880px。屏幕再宽也不会一路铺到最右边。';
+
+  // ---- 领域 ----
+  var rlbox = $('#realms'); clear(rlbox);
+  var rkeys = Object.keys(S.realms).map(Number).sort(function (a, b) { return a - b; });
+  var mkRealmChip = function (val, label, cnt) {
+    var c = el('div', 'chip' + (sel.realm === val ? ' on' : ''),
+               label + (cnt == null ? '' : ' ' + cnt.toLocaleString()));
+    c.onclick = function () {
+      if (sel.realm === val) return;
+      sel.realm = val;
+      savePref();
+      refresh(true);
+    };
+    rlbox.appendChild(c);
+  };
+  mkRealmChip(null, '全部', ALL.size);
+  rkeys.forEach(function (r) { mkRealmChip(r, 'R' + r, S.realms[r]); });
+
+  // 选了「全部」就没有"其他领域"可言，开关置灰
+  var dimBox = $('#dimother');
+  var dimWrap = $('#dimwrap');
+  dimBox.checked = sel.dimOthers;
+  dimBox.disabled = (sel.realm == null);
+  dimWrap.className = 'opt' + (sel.realm == null ? ' off' : '');
+
+  // 发送者列表已经按条数排好了，这里只是按输入框过滤一下，很便宜
+  var filt = ($('#qs').value || '').toLowerCase();
+  var list = filt
+    ? S.senders.filter(function (v) { return v.name.toLowerCase().indexOf(filt) >= 0; })
+    : S.senders;
+  var sbox = $('#senders'); clear(sbox);
+  var all = el('div', 'row' + (sel.sender === null ? ' on' : ''));
+  all.appendChild(el('span', 'lbl', '全部（' + S.senders.length + ' 人）'));
+  all.onclick = function () { sel.sender = null; refresh(true); };
+  sbox.appendChild(all);
+  list.slice(0, 300).forEach(function (e) {
+    var r = el('div', 'row' + (sel.sender === e.sid ? ' on' : ''));
+    var l = el('span', 'lbl', e.name);
+    l.style.color = colorOf(e.sid);
+    r.appendChild(l); r.appendChild(el('span', 'n', e.n));
+    r.onclick = function () { sel.sender = (sel.sender === e.sid ? null : e.sid); refresh(true); };
+    sbox.appendChild(r);
+  });
+
+  var hrs = S.hrs;
+  var rows = [
+    ['已载入', ALL.size.toLocaleString()],
+    ['发送者', S.senders.length],
+    ['天数', S.days],
+    ['时间跨度', hrs >= 48 ? (hrs / 24).toFixed(1) + ' 天' : hrs.toFixed(1) + ' 小时'],
+  ];
+  var st = $('#stats'); clear(st);
+  rows.forEach(function (kv) {
+    var d = el('div', 'stat');
+    d.appendChild(el('span', null, kv[0]));
+    d.appendChild(el('b', null, kv[1]));
+    st.appendChild(d);
+  });
+}
+
+function refresh(bottom) {
+  applyFilters(); renderSidebar(); renderFeed(); renderFiles(); renderDeep();
+  renderAiCard();
+  var p = [roomLabel(sel.room)];
+  if (sel.day) p.push(sel.day);
+  if (sel.sender != null) {
+    var one = view[0];
+    if (!one) ALL.forEach(function (m) { if (!one && m.sid === sel.sender) one = m; });
+    if (one) p.push(one.name);
+  }
+  if (sel.realm != null) p.push('R' + sel.realm + (sel.dimOthers ? '' : ' 独占'));
+  if (sel.q) p.push('搜索「' + sel.q + '」');
+  $('#btitle').textContent = ALL.size ? p.join(' · ') : '聊天记录';
+  var inRoom = roomMsgs().length;
+  var extraN = (deepMsgs() || []).length;
+  // 深搜捞回来的不在 ALL 里，所以 view 可能比"已载入的条数"还多。
+  // 直接写成 x / y 会看着像出错了，分开写清楚。
+  $('#bsub').textContent = ALL.size
+    ? (extraN
+        ? view.length.toLocaleString() + ' 条（含更早存档里的 ' +
+          extraN.toLocaleString() + ' 条）'
+        : view.length.toLocaleString() + ' / ' + inRoom.toLocaleString() + ' 条')
+    : '';
+  if (bottom) requestAnimationFrame(function () {
+    var f = $('#feed'); f.scrollTop = f.scrollHeight;
+  });
+}
+
+// ---------- 事件 ----------
+/** 重读索引，并把"已载入但又有新增"的日期重新拉一遍。 */
+function refreshAll() {
+  setErr(''); setInfo('检查更新…');
+  return getJSON(DATA + '/index.json').then(function (ix) {
+    INDEX = ix;
+    // 只按条数过滤，不按 published 过滤。published:false 只表示"这天还有一部分
+    // 没传上去"，已经传上去的那部分是真实存在的，不该被藏起来。
+    INDEX.days = (ix.days || []).filter(function (d) { return (d.n || 0) > 0; });
+    if (!encReady()) return;
+    sel.room = pickRoom();
+    var about = $('#about');
+    clear(about);
+    about.appendChild(el('div', null, '更新时间 ' + fmtFull(ix.generated)));
+    about.appendChild(el('div', null, '游戏内公开聊天频道的存档，仅供查阅。'));
+    // 页面版本号：两个站对不上就说明有一边的页面没更新
+    var bv = el('div', null, '页面 ' + PAGE_BUILD);
+    bv.style.opacity = '.55';
+    bv.style.fontVariantNumeric = 'tabular-nums';
+    bv.title = '这份页面的版本号。CF 和 GitHub 两个站的这个号应该一样，' +
+               '对不上就说明有一边没更新。';
+    about.appendChild(bv);
+    renderFiles();
+    // 当前房间一天都没载过
+    var loadedHere = 0;
+    LOADED.forEach(function (v, k) { if (k.split('|')[0] === sel.room) loadedHere++; });
+    if (!loadedHere) return loadDays(roomDays().slice(0, 3)).then(withRecent);
+
+    // 要重新拉的有两类：
+    //   1. 已经载过、但条数变多了的（当天又有新消息）
+    //   2. 索引里【新冒出来的一天】—— 归档按天分文件，跨过 UTC 零点之后新消息
+    //      全进新的日文件。只认第 1 类的话，一到零点页面就再也不更新了，
+    //      表现正是"侧栏能看到新文件，就是不显示新内容"。
+    // 「最新的一天」要按房间各算各的 —— 混着算的话，最吵的那个房间
+    // 会把安静房间的新日期挡在门外（它的日期比别人"旧"）。
+    var newest = '';
+    LOADED.forEach(function (v, k) {
+      var p2 = k.split('|');
+      if (p2[0] !== sel.room) return;
+      if (p2[1] > newest) newest = p2[1];
+    });
+    var todo = roomDays().filter(function (d) {
+      if (LOADED.has(d.room + '|' + d.day)) return needLoad(d);
+      return d.day >= newest;        // 只补更新的日期，不顺手把整个历史拖下来
+    });
+    return loadDays(todo).then(withRecent);
+  }).catch(function (e) { setErr('刷新失败：' + e.message); setInfo(); });
+}
+
+$('#b_refresh').onclick = refreshAll;
+// 这两个按钮都只管【当前房间】—— 和左边的日期列表是同一个范围，
+// 不会顺手把另外两个房间的几十万条一起拖下来。
+$('#b_recent').onclick = function () { if (INDEX) loadDays(roomDays().slice(0, 7)); };
+$('#b_all').onclick = function () {
+  if (!INDEX) return;
+  var mine = roomDays();
+  // 按【条数】提醒，不是文件数 —— 40 个文件可能是两万条，也可能是几十万条，
+  // 差别在低端手机上就是"有点慢"和"被系统杀掉"的区别。
+  var msgs = mine.reduce(function (a, d) { return a + (d.n || 0); }, 0);
+  if (msgs > 50000 &&
+      !confirm('将载入' + roomLabel(sel.room) + '的 ' + msgs.toLocaleString() +
+               ' 条消息（' + mine.length + ' 个文件）。\n' +
+               '数据量较大，手机上可能很慢甚至卡死。\n\n' +
+               '建议改为点左侧某一天单独载入。仍要继续吗？')) return;
+  loadDays(mine);
+};
+var qt;
+$('#q').oninput = function (e) {
+  clearTimeout(qt);
+  var v = e.target.value;
+  qt = setTimeout(function () {
+    sel.q = v.trim();
+    deepStop();                 // 上一轮还在跑就先叫停，别把结果混在一起
+    refresh(true);
+    // 已载入的那几天是瞬时筛出来的（上面那句），然后再去更早的存档里找。
+    // 从最新往回翻、凑够 500 条就停 —— 实测通常只翻 2~4 天、几十毫秒。
+    deepSearch();
+  }, 180);
+};
+$('#dimother').onchange = function (e) {
+  sel.dimOthers = !!e.target.checked;
+  savePref();
+  refresh(true);
+};
+$('#qs').oninput = renderSidebar;
+$('#burger').onclick = function () { document.body.classList.toggle('nav'); };
+$('#scrim').onclick = function () { document.body.classList.remove('nav'); };
+document.addEventListener('keydown', function (e) {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'f') { e.preventDefault(); $('#q').focus(); }
+  if (e.key === 'Escape') {
+    /*
+     * ⚠️ 灯箱开着时，Esc 只关灯箱，【不要】顺手把筛选也清了。
+     * 不加这个 return 的话，看完一张图按 Esc，
+     * 你翻了半天的搜索词和日期选择会一起消失 —— 而且看不出是被谁清的。
+     */
+    if (LB.open) { lbClose(); return; }
+    // 资料面板同理：Esc 只关面板，不动筛选
+    if (PC.open) { pcClose(); return; }
+    // 领域是"偏好"不是"临时筛选"，Esc 不动它。
+    // 房间同理，而且它必须始终有一个选中的 —— 清空就没东西可显示了。
+    sel.q = ''; sel.day = null; sel.sender = null;
+    $('#q').value = ''; document.body.classList.remove('nav'); refresh(true);
+  }
+});
+
+// 切回本页且距上次检查超过 2 分钟时，自动查一次更新
+var lastCheck = Date.now();
+document.addEventListener('visibilitychange', function () {
+  if (document.visibilityState !== 'visible') return;
+  if (Date.now() - lastCheck < 120000) return;
+  lastCheck = Date.now();
+  if (INDEX) refreshAll();
+});
+
+(function () {
+  var rb = document.querySelector('#c_reset');
+  if (rb) rb.onclick = function () {
+    var blank = calcBlank();
+    CALC.hours = blank.hours; CALC.wage = blank.wage;
+    CALC.bonus = blank.bonus; CALC.target = blank.target;
+    CALC.items = blank.items;
+    calcSave();
+    renderCalc();
+  };
+})();
+
+boot();
+})();
+</script>
+</body>
+</html>
