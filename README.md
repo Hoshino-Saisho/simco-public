@@ -34,7 +34,7 @@
 
 这里的index网站：
 
-⬇️⬇️⬇️⬇️⬇️⬇️⬇️⬇️⬇️⬇️⬇️⬇️⬇️⬇️
+⬇️⬇️⬇️国内玩家和用户请用这个网页⬇️⬇️⬇️
 
 https://hoshino-saisho.github.io/simco-public/ 
 
