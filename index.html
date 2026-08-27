@@ -2400,15 +2400,7 @@ function newsCard(a) {
       });
   };
   btns.appendChild(b);
-
-  var go = document.createElement('a');
-  go.className = 'nbtn';
-  go.href = 'https://www.simcompanies.com/newspaper/0/' + a.issue + '/';
-  go.target = '_blank';
-  go.rel = 'noopener noreferrer nofollow';
-  go.textContent = '去游戏里看';
-  go.style.textDecoration = 'none';
-  btns.appendChild(go);
+  // 「去游戏里看」那个按钮删了 —— 期号那一行本来就是个链接，重复。
   card.appendChild(btns);
 
   if (open) {
