@@ -42,8 +42,6 @@
      */
     --colmax:880px;
     --colmax-compact:440px;
-    /* 鸥子：从右边让出多少（要躲开油猴插件那一竖条，详见下面 #gull 那段） */
-    --gull-x:74px; --gull-y:14px; --gull-w:88px;
   }
   *{box-sizing:border-box}
   html,body{height:100%}
@@ -721,19 +719,40 @@
    * 重叠的表现是"平时好好的，装了插件的人看到一只被按钮压住半个身子的鸥子"，
    * 而我这边永远复现不出来（我没装插件）。
    *
-   * 所以 --gull-x 就是"从右边让出多少"，桌面 74px、手机 68px，
-   * 各比插件那一竖条再多 12px 的余量。改这个数之前先回去量一遍插件的 CSS。
+   * 桌面从右边让 74px、手机 68px，各比插件那一竖条再多 12px 的余量。
+   * 改这个数之前先回去量一遍插件的 CSS。
    *
    * z-index 18 是刻意压在【手机侧栏的遮罩（20）之下】的：
    * 侧栏拉出来的时候鸥子应该跟着被盖住，而不是浮在遮罩上面。
    * 灯箱(60)、资料卡(70)、屏蔽面板(72) 就更在它上面了。
    */
-  #gull{position:fixed;right:var(--gull-x);bottom:var(--gull-y);z-index:18;
+  /*
+   * ⚠️⚠️ 位置这几条【一个 var() 都不许用】。
+   *
+   * 原因是 CSS 里一条很反直觉的规矩：`var()` 代进去之后如果值不合法，
+   * 这条属性会变成 **"计算值时非法"**，而那不是"回退到上一条声明"，
+   * 是**回退到属性的初始值** —— `bottom` 的初始值是 `auto`。
+   * 一个 fixed 元素没有 bottom，就落回它的静态位置，
+   * 也就是飘到页面中间或者屏幕外，看着就是"鸥子不见了"。
+   *
+   *   #gull{ bottom:14px; bottom:var(--gull-y); }   ← 这样【救不了】
+   *
+   * 最容易触发它的就是手机那档里的 `env(safe-area-inset-bottom)`：
+   * 把 env() 塞进自定义属性，在不认 env() 的浏览器上整条作废。
+   * 而这种事只在别人的手机上发生，我这边永远复现不出来。
+   *
+   * 改成两条【都不带 var() 的】声明之后，规矩就变回直觉的那个了：
+   * 不认 env() 的浏览器在**解析时**就把第二条丢掉，老老实实用第一条。
+   */
+  #gull{position:fixed;right:74px;bottom:14px;z-index:18;
     display:flex;flex-direction:column;align-items:flex-end;gap:8px;
     pointer-events:none}
   body.no-gull #gull{display:none}
+  /* 开页那一帧是 hidden 的；#gull 的 display:flex 会盖过 UA 的 [hidden]，
+     所以必须自己写一条，不然它会在 gullBoot 之前先闪一下 */
+  #gull[hidden]{display:none}
 
-  #gull .gimg{width:var(--gull-w);height:auto;display:block;cursor:pointer;
+  #gull .gimg{width:88px;height:auto;display:block;cursor:pointer;
     pointer-events:auto;filter:drop-shadow(0 6px 14px rgba(0,0,0,.55));
     transition:transform .18s ease;user-select:none;-webkit-user-drag:none}
   #gull .gimg:hover{transform:translateY(-3px) scale(1.04)}
@@ -748,7 +767,7 @@
   }
 
   #gull .gbub{pointer-events:auto;position:relative;
-    max-width:min(300px,calc(100vw - var(--gull-x) - 28px));
+    max-width:300px;                    /* 同上：这里也不许出现 var() */
     background:var(--panel);border:1px solid rgba(125,211,252,.34);
     border-radius:13px;padding:10px 30px 11px 13px;
     box-shadow:0 14px 34px rgba(0,0,0,.5);
@@ -775,9 +794,13 @@
   #gull .gbub .gv{color:var(--acc);font-weight:600}
 
   @media(max-width:560px){
-    :root{--gull-x:68px;--gull-w:70px;
-          --gull-y:calc(10px + env(safe-area-inset-bottom,0px))}
-    #gull .gbub{font-size:12.5px;padding:9px 28px 10px 11px}
+    /* 两条 bottom 都是【死值】：不认 env() 的浏览器解析时就丢掉第二条，
+       老实用 10px —— 而不是把 bottom 变成 auto 让鸥子飘走 */
+    #gull{right:68px;bottom:10px}
+    #gull{bottom:calc(10px + env(safe-area-inset-bottom,0px))}
+    #gull .gimg{width:70px}
+    #gull .gbub{font-size:12.5px;padding:9px 28px 10px 11px;
+      max-width:calc(100vw - 96px)}
   }
 </style>
 </head>
@@ -2571,6 +2594,7 @@ function setMode(m) {
    * ⚠️ 只在【真的换了】的时候说 —— renderModeTabs 每次都把按钮重建一遍，
    * 再点一次当前那个模式也会走到这里，那不算"切过来"。
    */
+  gullShow();
   if (changed && to === 'calc') gullFire(4, {});
   if (changed && to === 'news') gullFire(5, {});
 }
@@ -4170,22 +4194,29 @@ function hidePick(on) {
 var GULL_IMG = 'data:image/png;base64,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';
 
 /*
- * 每种序列各自一套参数。**概率是各算各的**（用户明确要求）：
- * 序列 3 刚说过话，不会让接下来切计算器的序列 4 变得更沉默。
+ * 每种序列各自一套参数。
  *
- *   p     这一路被触发时，有多大概率真的说话
- *   cool  说完之后这一路至少静多少毫秒（防连点刷屏）
+ *   cool  说完之后这一路至少静多少毫秒（只防连点，不是"有时候不说"）
  *
- * 序列 1（点它）是 p:1 —— 点了必须有反应，
- * "点一下有时候没动静"会被当成按坏了。
+ * ⚠️ 这里【曾经有一个"有多大概率真的说话"的骰子】，2~5 各摇一次，
+ *    0.55 / 0.7。那是我把"每种序列的对话出现概率独立计算"理解错了 ——
+ *    那句话说的是【已经出现过的那句重复概率变少，各路各算各的】，
+ *    不是"点了也可能没反应"。
+ *
+ *    后果正是他报回来的那两条：选了个玩家、切到计算器，鸥子一声不吭，
+ *    而这和"这一路根本没台词"、"功能坏了"在表现上一模一样。
+ *    **触发一次就说一句** —— 说不说话是台词表决定的，不是骰子决定的。
+ *
+ * 冷却也从 4.5 秒压到 0.9 秒：它只该挡住连点两下变成两句话，
+ * 挡不该长到让人觉得"刚才那下没反应"。
  */
 var GULL_SEQ = {
-  0: { p: 1,    cool: 0 },
-  1: { p: 1,    cool: 260 },
-  2: { p: 0.55, cool: 4500 },
-  3: { p: 0.55, cool: 4500 },
-  4: { p: 0.7,  cool: 4500 },
-  5: { p: 0.7,  cool: 4500 },
+  0: { cool: 0 },
+  1: { cool: 260 },
+  2: { cool: 900 },
+  3: { cool: 900 },
+  4: { cool: 900 },
+  5: { cool: 900 },
 };
 var GULL_SEQ_MAX = 5;
 var GULL_EVERY_MIN = 50000;    // 序列 0 两句之间最短间隔
@@ -4223,6 +4254,14 @@ var GULL_BUILTIN = [
   { lead: '鸥子',       seq: 5, text: '这些文章是玩家自己写的，中文那段是 AI 翻的，看个大意就好。' },
 ];
 
+/*
+ * 内置那份的规范化结果。**永远可用**，因为它要当两种兜底：
+ *   ① 整份 gull.json 取不到（站点还没发布）
+ *   ② 表里某一路一句台词都没写（这一路照样得有反应）
+ * 在 gullNorm 之后赋值 —— 它是个函数声明，会提升，所以这里能直接调。
+ */
+var GULL_FALLBACK = null;
+
 /** 行指纹：**认内容不认行号**，这样他在表格里插行、排序，出现次数不会跟着串位。 */
 function gullKey(seq, lead, text) {
   var s = seq + '' + lead + '' + text;
@@ -4256,15 +4295,16 @@ function gullNorm(rows) {
  */
 function gullLoad() {
   if (GULL.p) return GULL.p;
+  if (!GULL_FALLBACK) GULL_FALLBACK = gullNorm(GULL_BUILTIN);
   GULL.state = 'wait';
   GULL.p = getPack(DATA + '/gull.json').then(function (j) {
     var got = gullNorm(j && j.lines);
     if (got.length) { GULL.lines = got; GULL.src = 'sheet'; }
-    else { GULL.lines = gullNorm(GULL_BUILTIN); GULL.src = 'builtin'; }
+    else { GULL.lines = GULL_FALLBACK; GULL.src = 'builtin'; }
     GULL.state = 'ok';
   }).catch(function () {
     // 404 / 断网 / 这个站点根本没发布过 —— 都用内置那份，不报错、不打扰
-    GULL.lines = gullNorm(GULL_BUILTIN);
+    GULL.lines = GULL_FALLBACK;
     GULL.src = 'builtin';
     GULL.state = 'ok';
   }).then(function () { gullNote(); });
@@ -4405,16 +4445,29 @@ function gullFill(text, ctx) {
  *
  * 另外刚说过的那一句额外压到 0.15：连着两遍同一句话最容易让人觉得坏了。
  */
-function gullPick(seq, ctx) {
-  if (!GULL.lines) return null;
-  var cands = [];
-  for (var i = 0; i < GULL.lines.length; i++) {
-    var l = GULL.lines[i];
+function gullCands(pool, seq, ctx) {
+  var out = [];
+  for (var i = 0; i < (pool || []).length; i++) {
+    var l = pool[i];
     if (l.seq !== seq) continue;
     var parts = gullFill(l.text, ctx);
     if (!parts) continue;                 // 这句要的数据现在没有
-    cands.push({ l: l, parts: parts });
+    out.push({ l: l, parts: parts });
   }
+  return out;
+}
+
+function gullPick(seq, ctx) {
+  var cands = gullCands(GULL.lines, seq, ctx);
+  /*
+   * ⚠️ 这一路在表里一句台词都没有 —— **退回内置的那句，别装哑巴。**
+   *
+   * 他报回来的"切到计算器鸥子没反应"多半就是这个：表里 0 和 1 写得满满的，
+   * 4、5 一句没写。而"没写"和"坏了"在屏幕上长得完全一样，
+   * 他只能来问我，而我这边（表是全的）永远复现不出来。
+   * 现在至少会冒一句，侧栏也会写明这一路还是内置的。
+   */
+  if (!cands.length) cands = gullCands(GULL_FALLBACK, seq, ctx);
   if (!cands.length) return null;
   var lastK = GULL.last[seq];
   var ws = [], tot = 0;
@@ -4435,6 +4488,20 @@ function gullPick(seq, ctx) {
 // 说话
 // ---------------------------------------------------------------------------
 function gullBox() { return document.querySelector('#gull'); }
+
+/**
+ * 把鸥子摆出来。
+ *
+ * 每次切模式都重新确认一次 —— 他报过"在计算器里鸥子不显示"，
+ * 而我这边（三个模式都试过、连油猴插件都装上量过）复现不出来。
+ * 复现不出来的时候，与其猜，不如把这一句放在每条路上：
+ * 它只是把 hidden 摘掉，代价是零，而且**开关关掉时不会被它顶回来**
+ * （那条走的是 body 上的 no-gull 类，跟这里互不干涉）。
+ */
+function gullShow() {
+  var box = gullBox();
+  if (box && box.hidden) box.hidden = false;
+}
 
 /** 收起对话框（鸥子本人还在）。 */
 function gullQuiet() {
@@ -4462,10 +4529,7 @@ function gullFire(seq, ctx, force) {
   }
   var cfg = GULL_SEQ[seq] || GULL_SEQ[0];
   var now = Date.now();
-  if (!force) {
-    if (now < (GULL.cool[seq] || 0)) return;
-    if (Math.random() > cfg.p) { GULL.cool[seq] = now + cfg.cool; return; }
-  }
+  if (!force && now < (GULL.cool[seq] || 0)) return;
   var hit = gullPick(seq, ctx || {});
   if (!hit) return;
   GULL.cool[seq] = now + cfg.cool;
@@ -4565,16 +4629,32 @@ function gullSet(on) {
   else { gullQuiet(); if (GULL.timer) { clearTimeout(GULL.timer); GULL.timer = 0; } }
 }
 
+var GULL_SEQ_NAME = ['自己冒出来', '点鸥子', '选日期', '选玩家', '计算器', '文章总结'];
+
+/*
+ * 侧栏那行小字。
+ *
+ * ⚠️ 它必须回答一个问题：**"我点了它没说话，是没写台词还是坏了？"**
+ * 第一版只写了"台词 N 句"，而那个数是【全部序列加起来】的 ——
+ * 表里 30 句全是序列 0，看起来一片繁荣，切到计算器却一声不吭。
+ * 所以现在把空着的那几路直接点名。
+ */
 function gullNote() {
   var n = document.querySelector('#gullnote');
   if (!n) return;
   if (!GULL.on) { n.textContent = '关了。台词和出现次数都还留着，打开就接着来。'; return; }
-  var cnt = GULL.lines ? GULL.lines.length : 0;
-  n.textContent = GULL.state !== 'ok'
-    ? '正在取台词…'
-    : (GULL.src === 'sheet'
-        ? ('台词 ' + cnt + ' 句，来自采集端的「鸥子」表。')
-        : ('台词 ' + cnt + ' 句（内置的那几句）—— 采集端还没发布 data/gull.json。'));
+  if (GULL.state !== 'ok') { n.textContent = '正在取台词…'; return; }
+  var by = {}, cnt = 0;
+  (GULL.lines || []).forEach(function (l) { by[l.seq] = (by[l.seq] || 0) + 1; cnt++; });
+  var empty = [];
+  for (var s = 0; s <= GULL_SEQ_MAX; s++) if (!by[s]) empty.push(GULL_SEQ_NAME[s]);
+  n.textContent =
+    (GULL.src === 'sheet'
+      ? ('台词 ' + cnt + ' 句，来自采集端的「鸥子」表。')
+      : ('台词 ' + cnt + ' 句（内置的那几句）—— 采集端还没发布 data/gull.json。')) +
+    (empty.length
+      ? '　这几路表里还没写，先用内置的：' + empty.join('、') + '。'
+      : '');
 }
 
 function gullBoot() {
@@ -4583,7 +4663,7 @@ function gullBoot() {
   img.src = GULL_IMG;
   img.onclick = function () { gullFire(1, {}, true); };
   img.title = '鸥子';
-  box.hidden = false;
+  gullShow();
   try { document.body.classList.toggle('no-gull', !GULL.on); } catch (e) {}
   var cb = document.querySelector('#gullon');
   if (cb) {
