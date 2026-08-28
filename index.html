@@ -42,6 +42,8 @@
      */
     --colmax:880px;
     --colmax-compact:440px;
+    /* 鸥子：从右边让出多少（要躲开油猴插件那一竖条，详见下面 #gull 那段） */
+    --gull-x:74px; --gull-y:14px; --gull-w:88px;
   }
   *{box-sizing:border-box}
   html,body{height:100%}
@@ -705,6 +707,78 @@
     .msg{padding-left:12px;padding-right:12px}
     .daysep{margin-left:12px;margin-right:12px}
   }
+
+  /*
+   * ======================= 鸥子（右下角那只海鸥）=======================
+   *
+   * ⚠️ 位置这件事是【硬要求】，不是审美问题：油猴插件在右下角有一列按钮，
+   *
+   *     #scs-fab   right:18px  bottom:18px  44×44     （词频统计）
+   *     #scs-cmp   right:18px  bottom:70px  44×44     （合同对比）
+   *
+   * 也就是说 **右边 18~62px 这一竖条是插件的地盘**（手机上是 12~56px）。
+   * 鸥子必须整个躲开它 —— 不是"错开一点"，是完全不重叠：
+   * 重叠的表现是"平时好好的，装了插件的人看到一只被按钮压住半个身子的鸥子"，
+   * 而我这边永远复现不出来（我没装插件）。
+   *
+   * 所以 --gull-x 就是"从右边让出多少"，桌面 74px、手机 68px，
+   * 各比插件那一竖条再多 12px 的余量。改这个数之前先回去量一遍插件的 CSS。
+   *
+   * z-index 18 是刻意压在【手机侧栏的遮罩（20）之下】的：
+   * 侧栏拉出来的时候鸥子应该跟着被盖住，而不是浮在遮罩上面。
+   * 灯箱(60)、资料卡(70)、屏蔽面板(72) 就更在它上面了。
+   */
+  #gull{position:fixed;right:var(--gull-x);bottom:var(--gull-y);z-index:18;
+    display:flex;flex-direction:column;align-items:flex-end;gap:8px;
+    pointer-events:none}
+  body.no-gull #gull{display:none}
+
+  #gull .gimg{width:var(--gull-w);height:auto;display:block;cursor:pointer;
+    pointer-events:auto;filter:drop-shadow(0 6px 14px rgba(0,0,0,.55));
+    transition:transform .18s ease;user-select:none;-webkit-user-drag:none}
+  #gull .gimg:hover{transform:translateY(-3px) scale(1.04)}
+  #gull .gimg:active{transform:translateY(-1px) scale(.99)}
+  /* 冒话的时候轻轻点一下头，告诉人"这句是刚出来的" */
+  #gull.talking .gimg{animation:gnod .5s ease}
+  @keyframes gnod{0%{transform:none}35%{transform:translateY(-7px) rotate(-4deg)}
+                  70%{transform:translateY(-2px) rotate(2deg)}100%{transform:none}}
+  @media(prefers-reduced-motion:reduce){
+    #gull.talking .gimg{animation:none}
+    #gull .gimg{transition:none}
+  }
+
+  #gull .gbub{pointer-events:auto;position:relative;
+    max-width:min(300px,calc(100vw - var(--gull-x) - 28px));
+    background:var(--panel);border:1px solid rgba(125,211,252,.34);
+    border-radius:13px;padding:10px 30px 11px 13px;
+    box-shadow:0 14px 34px rgba(0,0,0,.5);
+    font-size:13px;line-height:1.65;color:var(--tx);
+    opacity:0;transform:translateY(6px);transition:opacity .18s,transform .18s}
+  #gull.talking .gbub{opacity:1;transform:none}
+  #gull .gbub[hidden]{display:none}
+  /* 小尖角，指着鸥子的头 */
+  #gull .gbub::after{content:'';position:absolute;right:26px;bottom:-7px;
+    width:12px;height:12px;background:var(--panel);
+    border-right:1px solid rgba(125,211,252,.34);
+    border-bottom:1px solid rgba(125,211,252,.34);
+    transform:rotate(45deg)}
+  #gull .gbub .glead{display:block;font-size:11px;color:var(--acc);
+    font-weight:700;letter-spacing:.4px;margin-bottom:3px}
+  #gull .gbub .gx{position:absolute;right:5px;top:4px;width:20px;height:20px;
+    border:0;background:transparent;color:var(--dim);cursor:pointer;
+    font-size:14px;line-height:1;border-radius:5px;font-family:inherit;padding:0}
+  #gull .gbub .gx:hover{color:var(--tx);background:var(--panel2)}
+  /*
+   * 被替换进来的实时数据（日期、玩家名…）描一下 ——
+   * 这样一眼能看出"这句里哪一截是照着你刚才点的东西现填的"。
+   */
+  #gull .gbub .gv{color:var(--acc);font-weight:600}
+
+  @media(max-width:560px){
+    :root{--gull-x:68px;--gull-w:70px;
+          --gull-y:calc(10px + env(safe-area-inset-bottom,0px))}
+    #gull .gbub{font-size:12.5px;padding:9px 28px 10px 11px}
+  }
 </style>
 </head>
 <body>
@@ -773,6 +847,14 @@
     <button class="btn" id="b_pick">挑选要藏的消息</button>
     <div class="note" id="hidenote"></div>
   </div>
+  <div class="sec">
+    <h2>鸥子</h2>
+    <label class="opt" id="gullwrap">
+      <input type="checkbox" id="gullon" checked>
+      <span>右下角那只海鸥</span>
+    </label>
+    <div class="note" id="gullnote"></div>
+  </div>
   <div class="sec"><h2>统计</h2><div id="stats"></div></div>
 
   <div style="flex:1"></div>
@@ -818,6 +900,15 @@
     <button class="cbtn" id="c_reset">清空</button>
   </div>
   <div id="calcbody"><div class="cwrap" id="cwrap"></div></div>
+</div>
+
+<!--
+  鸥子。放在三个模式【外面】—— 它在聊天记录、计算器、文章总结里都在，
+  切模式的时候不该跟着消失（序列 4/5 本来就是切过去才说的话）。
+-->
+<div id="gull" hidden>
+  <div class="gbub" id="gbub" hidden></div>
+  <img class="gimg" id="gimg" alt="鸥子" draggable="false">
 </div>
 
 <div id="news">
@@ -1001,7 +1092,9 @@ function savePref() {
     localStorage.setItem('simco.pref',
       JSON.stringify({ realm: sel.realm, dim: sel.dimOthers, room: sel.room,
                        w: sel.width, mode: sel.mode, ct: sel.calcTab,
-                       mask: MASK, hide: hideList() }));
+                       mask: MASK, hide: hideList(),
+                       // GULL 在文件下面才赋值；万一在那之前存盘，别把开关写成 false
+                       gull: GULL ? GULL.on : true }));
   } catch (e) { /* 存不了就算了，不影响使用 */ }
 }
 
@@ -2466,12 +2559,20 @@ function setMode(m) {
     document.body.classList.toggle('mode-calc', to === 'calc');
     document.body.classList.toggle('mode-news', to === 'news');
   } catch (e) {}
+  var changed = (sel.mode !== to);
   sel.mode = to;
   savePref();
   if (to === 'calc') renderCalc();
   else if (to === 'news') { renderNews(); newsLoad(); }
   else if (feed) feed.scrollTop = MODE_FEED_TOP;
   renderModeTabs();
+  /*
+   * 鸥子：切到计算器 = 序列 4，切到文章总结 = 序列 5。
+   * ⚠️ 只在【真的换了】的时候说 —— renderModeTabs 每次都把按钮重建一遍，
+   * 再点一次当前那个模式也会走到这里，那不算"切过来"。
+   */
+  if (changed && to === 'calc') gullFire(4, {});
+  if (changed && to === 'news') gullFire(5, {});
 }
 
 function setCalcTab(t) {
@@ -2568,6 +2669,13 @@ function boot() {
   renderModeTabs();
   if (sel.mode !== 'chat') setMode(sel.mode);
   renderTools();
+  /*
+   * 鸥子放在【索引之前】起来：它一个字都不依赖聊天数据，
+   * 而索引在国内可能要等十几秒 —— 让人对着一个空页面等，还不如先有只鸟。
+   * 上面那句 setMode 会试着开火（序列 4/5），那会儿台词还没到，
+   * gullFire 自己会先去取再回来说 —— 所以这两行的先后不重要。
+   */
+  gullBoot();
   getJSON(DATA + '/index.json').then(function (ix) {
     INDEX = ix;
     // 只按条数过滤，不按 published 过滤。published:false 只表示"这天还有一部分
@@ -3022,6 +3130,7 @@ function pcRender(m) {
       pcClose();
       document.body.classList.remove('nav');
       refresh(true);
+      gullFire(3, { sid: sid });          // 鸥子序列 3（另一条入口：资料卡里那个按钮）
     };
   })(m.sid);
   btns.appendChild(only);
@@ -4037,6 +4146,455 @@ function hidePick(on) {
   refresh();
 }
 
+/*
+ * ============================================================================
+ * ================================ 鸥子 ======================================
+ * ============================================================================
+ *
+ * 右下角那只拿着斧头的海鸥。台词来自采集端「鸥子」工作表，发布成 data/gull.json。
+ *
+ * 三件事在这里定死，别的都可以商量：
+ *
+ * ① **台词是数据，不是代码。** 想加一句就去表格里加一行，不用碰这个文件。
+ *    表格还没有 / 还没发布 / 404 —— 一律回落到下面那份内置台词，
+ *    绝不能变成"点了鸥子没反应"（那种时候人分不清是表没写还是代码坏了）。
+ *
+ * ② **台词是不可信文本。** 它经采集端进来，最终由这里画到页面上。
+ *    一律 textContent / createTextNode，一个 innerHTML 都不许有。
+ *
+ * ③ **屏蔽优先于鸥子。** {玩家} 遇到被屏蔽的人必须吐「玩家1」，
+ *    {玩家id} 干脆整句作废。不然屏蔽功能辛辛苦苦遮住的名字，
+ *    会被鸥子在录像里当着面念出来 —— 而这是【剪辑时才会发现】的那种事故。
+ */
+
+var GULL_IMG = 'data:image/png;base64,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';
+
+/*
+ * 每种序列各自一套参数。**概率是各算各的**（用户明确要求）：
+ * 序列 3 刚说过话，不会让接下来切计算器的序列 4 变得更沉默。
+ *
+ *   p     这一路被触发时，有多大概率真的说话
+ *   cool  说完之后这一路至少静多少毫秒（防连点刷屏）
+ *
+ * 序列 1（点它）是 p:1 —— 点了必须有反应，
+ * "点一下有时候没动静"会被当成按坏了。
+ */
+var GULL_SEQ = {
+  0: { p: 1,    cool: 0 },
+  1: { p: 1,    cool: 260 },
+  2: { p: 0.55, cool: 4500 },
+  3: { p: 0.55, cool: 4500 },
+  4: { p: 0.7,  cool: 4500 },
+  5: { p: 0.7,  cool: 4500 },
+};
+var GULL_SEQ_MAX = 5;
+var GULL_EVERY_MIN = 50000;    // 序列 0 两句之间最短间隔
+var GULL_EVERY_MAX = 165000;   // 最长
+var GULL_SHOW_MS = 9500;       // 一句话在屏幕上挂多久
+var GULL_SEEN_CAP = 400;       // localStorage 里最多记多少行的出现次数
+
+var GULL = {
+  on: PREF.gull !== false,
+  lines: null,            // [{lead, text, seq, k}]
+  state: 'idle',          // idle | wait | ok
+  p: null,                // 取台词那一趟的 Promise（只跑一趟，见 gullLoad）
+  src: '',                // 'sheet' | 'builtin'
+  seen: {},               // 行指纹 -> 出现过几次
+  last: {},               // 序列 -> 上一句的指纹
+  cool: {},               // 序列 -> 最早什么时候能再说
+  timer: 0,
+  hideT: 0,
+  said: 0,
+};
+
+/*
+ * 内置台词：表格还没建好之前用的。
+ * 刻意写得少而短 —— 它的作用是"证明这块是活的"，不是替他把话写完。
+ */
+var GULL_BUILTIN = [
+  { lead: '鸥子',       seq: 0, text: '这里是公开只读存档，页面不会把你的任何东西传回去。' },
+  { lead: '温馨提示',   seq: 0, text: '现在是 {现在}，你在看{房间}，眼前这一屏有 {条数} 条。' },
+  { lead: '鸥子',       seq: 0, text: '台词还没写呢 —— 去采集端那张「鸥子」表里加几行，我就换词了。' },
+  { lead: '鸥子',       seq: 1, text: '别戳了，斧头会掉的。' },
+  { lead: '鸥子',       seq: 1, text: '在的在的。今天是 {今天}。' },
+  { lead: '鸥子',       seq: 2, text: '{日期简}是{星期}，那天这屋里有 {当天条数} 条，翻起来慢慢看。' },
+  { lead: '鸥子',       seq: 3, text: '现在只看 {玩家} 一个人说话了，再点一次他的名字就退回全部。' },
+  { lead: '游戏机制小提示', seq: 4, text: '算之前先把品质加成填对，那一项最容易忘，也最影响结果。' },
+  { lead: '鸥子',       seq: 5, text: '这些文章是玩家自己写的，中文那段是 AI 翻的，看个大意就好。' },
+];
+
+/** 行指纹：**认内容不认行号**，这样他在表格里插行、排序，出现次数不会跟着串位。 */
+function gullKey(seq, lead, text) {
+  var s = seq + '' + lead + '' + text;
+  var h = 5381;
+  for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+
+function gullNorm(rows) {
+  var out = [];
+  (rows || []).forEach(function (r) {
+    if (!r) return;
+    var text = String(r.text == null ? r[1] : r.text || '').trim();
+    if (!text) return;                       // 内容空的那一行 = 这行先不用
+    var lead = String((r.lead == null ? r[0] : r.lead) || '').trim();
+    var seq = Number(r.seq == null ? r[2] : r.seq);
+    if (!isFinite(seq) || seq < 0 || seq > GULL_SEQ_MAX) seq = 0;
+    seq = Math.floor(seq);
+    out.push({ lead: lead, text: text, seq: seq, k: gullKey(seq, lead, text) });
+  });
+  return out;
+}
+
+/*
+ * ⚠️ 取台词【只跑一趟】，而且要把那一趟的 Promise 存下来。
+ *
+ * 第一版写的是"正在取就直接 Promise.resolve()"，配上 gullFire 里
+ * "还没取到就取完再来一次"，就成了一个死循环：
+ * 取的过程中来一次触发 → 立刻拿到一个已完成的 Promise → 再触发一次 → …
+ * 栈不会爆（是微任务），表现是**整个页面卡住**，而且看不出跟鸥子有关。
+ */
+function gullLoad() {
+  if (GULL.p) return GULL.p;
+  GULL.state = 'wait';
+  GULL.p = getPack(DATA + '/gull.json').then(function (j) {
+    var got = gullNorm(j && j.lines);
+    if (got.length) { GULL.lines = got; GULL.src = 'sheet'; }
+    else { GULL.lines = gullNorm(GULL_BUILTIN); GULL.src = 'builtin'; }
+    GULL.state = 'ok';
+  }).catch(function () {
+    // 404 / 断网 / 这个站点根本没发布过 —— 都用内置那份，不报错、不打扰
+    GULL.lines = gullNorm(GULL_BUILTIN);
+    GULL.src = 'builtin';
+    GULL.state = 'ok';
+  }).then(function () { gullNote(); });
+  return GULL.p;
+}
+
+// ---------------------------------------------------------------------------
+// 模板函数：在表格里写 {日期}，出来的是你刚点的那一天
+// ---------------------------------------------------------------------------
+/*
+ * 三条规矩，都是踩过的：
+ *
+ * ① **替换出来的东西插在句子里**，不是把整个对话框换成一个日期。
+ *    所以这里返回的是【片段数组】，由 gullSay 拼成一串文本节点 + 一个
+ *    带样式的 <span>，句子的前后文一个字都不丢。
+ *
+ * ② **认不出的记号原样留着**。写错了要看得见 —— 悄悄吞掉的话，
+ *    他会以为是自己那句话写错了，回去把整行删掉重写。
+ *
+ * ③ **这一句缺数据就整句作废**（返回 null）。比如序列 0 的定时台词里
+ *    写了 {玩家}，那会儿根本没选人 —— 与其冒一句"现在只看  一个人说话了"，
+ *    不如换一句能说的。所以取不到值的行【连候选都进不去】。
+ */
+var GULL_WEEK = ['星期日','星期一','星期二','星期三','星期四','星期五','星期六'];
+
+function gullDayN(day) {
+  var n = 0;
+  ALL.forEach(function (m) { if (m._d === day && m.room === sel.room) n++; });
+  return n;
+}
+
+/** 这个人在当前房间说过几条。 */
+function gullSidN(sid) {
+  var n = 0;
+  ALL.forEach(function (m) { if (m.sid === sid && m.room === sel.room) n++; });
+  return n;
+}
+
+/** 这个人叫什么 —— **被屏蔽的人一律吐「玩家N」**，绝不吐真名。 */
+function gullWho(sid) {
+  if (MASK_IX[sid]) return '玩家' + MASK_IX[sid];
+  var nm = '';
+  var st = STATS;
+  if (st && st.senders) {
+    for (var i = 0; i < st.senders.length; i++) {
+      if (st.senders[i].sid === sid) { nm = st.senders[i].name; break; }
+    }
+  }
+  if (!nm) ALL.forEach(function (m) { if (!nm && m.sid === sid) nm = m.name; });
+  return nm || null;
+}
+
+var GULL_MODE_NAME = { chat: '聊天记录', calc: '计算器', news: '文章总结' };
+
+var GULL_FN = {
+  '今天':   function () { return dayOf(Date.now()); },
+  '现在':   function () { return hmOf(Date.now()); },
+  '房间':   function () { return roomLabel(sel.room); },
+  '模式':   function () { return GULL_MODE_NAME[sel.mode] || null; },
+  '条数':   function () { return String(view.length); },
+  '存档条数': function () { return String(ALL.size); },
+
+  '日期':   function (c) { return c.day || null; },
+  '日期简': function (c) {
+    if (!c.day) return null;
+    var p = c.day.split('-');
+    return p.length === 3 ? (Number(p[1]) + '月' + Number(p[2]) + '日') : c.day;
+  },
+  '星期':   function (c) {
+    if (!c.day) return null;
+    var d = new Date(c.day + 'T12:00:00');
+    return isNaN(d) ? null : GULL_WEEK[d.getDay()];
+  },
+  '几天前': function (c) {
+    if (!c.day) return null;
+    var d = new Date(c.day + 'T12:00:00');
+    if (isNaN(d)) return null;
+    var t = new Date(); t.setHours(12, 0, 0, 0);
+    var n = Math.round((t - d) / 86400000);
+    if (n <= 0) return '今天';
+    if (n === 1) return '昨天';
+    if (n === 2) return '前天';
+    return n + ' 天前';
+  },
+  '当天条数': function (c) { return c.day ? String(gullDayN(c.day)) : null; },
+
+  '玩家':   function (c) { return c.sid == null ? null : gullWho(c.sid); },
+  // ⚠️ 屏蔽的就是「头像和 ID」。被屏蔽的人这一句直接作废，不给任何替代写法。
+  '玩家id': function (c) {
+    return (c.sid == null || MASK_IX[c.sid]) ? null : String(c.sid);
+  },
+  '玩家条数': function (c) { return c.sid == null ? null : String(gullSidN(c.sid)); },
+};
+
+var GULL_TOKEN_RE = /\{([^{}\n]{1,60})\}/g;
+
+/**
+ * 把一句台词拆成片段。
+ * 返回 [{t:'文本'} | {v:'替换进来的值'}]，取不到值就返回 null（这句作废）。
+ */
+function gullFill(text, ctx) {
+  var out = [], last = 0, m, dead = false;
+  GULL_TOKEN_RE.lastIndex = 0;
+  while ((m = GULL_TOKEN_RE.exec(text)) !== null) {
+    var raw = m[1].trim();
+    var sp = raw.indexOf(' ');
+    var name = sp < 0 ? raw : raw.slice(0, sp);
+    var arg = sp < 0 ? '' : raw.slice(sp + 1);
+    var val;
+    if (name === '随机') {
+      // {随机 甲|乙|丙} —— 同一句话每次冒出来不完全一样
+      var opts = arg.split('|').map(function (x) { return x.trim(); })
+                    .filter(function (x) { return x; });
+      val = opts.length ? opts[Math.floor(Math.random() * opts.length)] : null;
+    } else if (Object.prototype.hasOwnProperty.call(GULL_FN, name)) {
+      try { val = GULL_FN[name](ctx); } catch (e) { val = null; }
+    } else {
+      val = undefined;                    // 不认识 → 原样留着，但不算作废
+    }
+    if (val === null) { dead = true; break; }
+    if (m.index > last) out.push({ t: text.slice(last, m.index) });
+    if (val === undefined) out.push({ t: m[0] });
+    else out.push({ v: String(val) });
+    last = m.index + m[0].length;
+  }
+  if (dead) return null;
+  if (last < text.length) out.push({ t: text.slice(last) });
+  return out.length ? out : [{ t: text }];
+}
+
+// ---------------------------------------------------------------------------
+// 挑一句：出现过的少出现
+// ---------------------------------------------------------------------------
+/*
+ * 权重 = 1 / (1 + 2 × 出现过几次)。第一次 1，第二次 0.33，第三次 0.2 ——
+ * 是"变少"，不是"再也不出现"。全说过一遍之后大家又回到同一水平上，
+ * 这正是想要的：台词只有五句的时候，硬去重会直接没话可说。
+ *
+ * 另外刚说过的那一句额外压到 0.15：连着两遍同一句话最容易让人觉得坏了。
+ */
+function gullPick(seq, ctx) {
+  if (!GULL.lines) return null;
+  var cands = [];
+  for (var i = 0; i < GULL.lines.length; i++) {
+    var l = GULL.lines[i];
+    if (l.seq !== seq) continue;
+    var parts = gullFill(l.text, ctx);
+    if (!parts) continue;                 // 这句要的数据现在没有
+    cands.push({ l: l, parts: parts });
+  }
+  if (!cands.length) return null;
+  var lastK = GULL.last[seq];
+  var ws = [], tot = 0;
+  for (var j = 0; j < cands.length; j++) {
+    var w = 1 / (1 + 2 * (GULL.seen[cands[j].l.k] || 0));
+    if (cands.length > 1 && cands[j].l.k === lastK) w *= 0.15;
+    ws.push(w); tot += w;
+  }
+  var r = Math.random() * tot;
+  for (var k = 0; k < cands.length; k++) {
+    r -= ws[k];
+    if (r <= 0) return cands[k];
+  }
+  return cands[cands.length - 1];
+}
+
+// ---------------------------------------------------------------------------
+// 说话
+// ---------------------------------------------------------------------------
+function gullBox() { return document.querySelector('#gull'); }
+
+/** 收起对话框（鸥子本人还在）。 */
+function gullQuiet() {
+  var box = gullBox();
+  if (!box) return;
+  box.classList.remove('talking');
+  if (GULL.hideT) { clearTimeout(GULL.hideT); GULL.hideT = 0; }
+  // 等淡出动画走完再真的藏起来，不然它会"啪"地消失
+  setTimeout(function () {
+    var b = document.querySelector('#gbub'), bx = gullBox();
+    if (b && bx && !bx.classList.contains('talking')) b.hidden = true;
+  }, 220);
+}
+
+/**
+ * 触发某一路。**每一路的概率、冷却各算各的。**
+ * force = true 时跳过概率（点鸥子那一路用）。
+ */
+function gullFire(seq, ctx, force) {
+  if (!GULL.on) return;
+  if (GULL.state !== 'ok') {
+    // 台词还在路上：等这一趟取完再补说一次。取完还是不 ok 就作罢，不再排队。
+    gullLoad().then(function () { if (GULL.state === 'ok') gullFire(seq, ctx, force); });
+    return;
+  }
+  var cfg = GULL_SEQ[seq] || GULL_SEQ[0];
+  var now = Date.now();
+  if (!force) {
+    if (now < (GULL.cool[seq] || 0)) return;
+    if (Math.random() > cfg.p) { GULL.cool[seq] = now + cfg.cool; return; }
+  }
+  var hit = gullPick(seq, ctx || {});
+  if (!hit) return;
+  GULL.cool[seq] = now + cfg.cool;
+  GULL.last[seq] = hit.l.k;
+  GULL.seen[hit.l.k] = (GULL.seen[hit.l.k] || 0) + 1;
+  GULL.said++;
+  gullSeenSave();
+  gullSay(hit.l.lead, hit.parts);
+}
+
+/** 把片段画进气泡。**全程 textContent，一个 innerHTML 都没有。** */
+function gullSay(lead, parts) {
+  var box = gullBox(), bub = document.querySelector('#gbub');
+  if (!box || !bub) return;
+  clear(bub);
+
+  var x = el('button', 'gx', '×');
+  x.title = '知道了';
+  x.setAttribute('aria-label', '收起鸥子这句话');
+  x.onclick = function (ev) { ev.stopPropagation(); gullQuiet(); };
+  bub.appendChild(x);
+
+  if (lead) bub.appendChild(el('span', 'glead', lead));
+  var line = el('span', 'gtx');
+  parts.forEach(function (p) {
+    if (p.v !== undefined) line.appendChild(el('span', 'gv', p.v));
+    else line.appendChild(document.createTextNode(p.t));
+  });
+  bub.appendChild(line);
+
+  bub.hidden = false;
+  // 重放点头动画：先摘掉再挂上，中间强制一次重排
+  box.classList.remove('talking');
+  void box.offsetWidth;
+  box.classList.add('talking');
+
+  if (GULL.hideT) clearTimeout(GULL.hideT);
+  // 长句子多留一会儿 —— 按能读完算，不是所有话都一样长
+  var ms = Math.min(20000, GULL_SHOW_MS + line.textContent.length * 90);
+  GULL.hideT = setTimeout(gullQuiet, ms);
+}
+
+// ---------------------------------------------------------------------------
+// 序列 0：随机定时
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️ 页面在后台标签里的时候【不说话】——
+ * 不然切回来会看到一句上上个话题的台词，还占着计时器。
+ */
+function gullTimer() {
+  if (GULL.timer) { clearTimeout(GULL.timer); GULL.timer = 0; }
+  if (!GULL.on) return;
+  var wait = GULL_EVERY_MIN + Math.random() * (GULL_EVERY_MAX - GULL_EVERY_MIN);
+  GULL.timer = setTimeout(function () {
+    GULL.timer = 0;
+    var hidden = false;
+    try { hidden = !!document.hidden; } catch (e) {}
+    if (!hidden) gullFire(0, {});
+    gullTimer();
+  }, wait);
+}
+
+// ---------------------------------------------------------------------------
+// 开关 / 存盘
+// ---------------------------------------------------------------------------
+/*
+ * 出现次数单独存一个键，**不跟 simco.pref 混**：
+ * pref 是"你怎么设置的"，这个是"你已经看过什么"，
+ * 两者的生命周期完全不同 —— 清掉后者不该把屏蔽名单和藏起来的消息一起清掉。
+ */
+function gullSeenLoad() {
+  GULL.seen = {};
+  try {
+    var o = JSON.parse(localStorage.getItem('simco.gull') || '{}') || {};
+    Object.keys(o).forEach(function (k) {
+      var n = Number(o[k]);
+      if (isFinite(n) && n > 0) GULL.seen[k] = n;
+    });
+  } catch (e) { /* 存不了就当没看过，不影响使用 */ }
+}
+function gullSeenSave() {
+  try {
+    var keys = Object.keys(GULL.seen);
+    // 表格改来改去，老指纹会一直堆着。超了就整个丢掉重新数 ——
+    // 这本账丢了没有任何后果，不值得为它写一套淘汰算法。
+    if (keys.length > GULL_SEEN_CAP) GULL.seen = {};
+    localStorage.setItem('simco.gull', JSON.stringify(GULL.seen));
+  } catch (e) {}
+}
+
+function gullSet(on) {
+  GULL.on = !!on;
+  try { document.body.classList.toggle('no-gull', !GULL.on); } catch (e) {}
+  savePref();
+  gullNote();
+  if (GULL.on) { gullLoad(); gullTimer(); }
+  else { gullQuiet(); if (GULL.timer) { clearTimeout(GULL.timer); GULL.timer = 0; } }
+}
+
+function gullNote() {
+  var n = document.querySelector('#gullnote');
+  if (!n) return;
+  if (!GULL.on) { n.textContent = '关了。台词和出现次数都还留着，打开就接着来。'; return; }
+  var cnt = GULL.lines ? GULL.lines.length : 0;
+  n.textContent = GULL.state !== 'ok'
+    ? '正在取台词…'
+    : (GULL.src === 'sheet'
+        ? ('台词 ' + cnt + ' 句，来自采集端的「鸥子」表。')
+        : ('台词 ' + cnt + ' 句（内置的那几句）—— 采集端还没发布 data/gull.json。'));
+}
+
+function gullBoot() {
+  var box = gullBox(), img = document.querySelector('#gimg');
+  if (!box || !img) return;
+  img.src = GULL_IMG;
+  img.onclick = function () { gullFire(1, {}, true); };
+  img.title = '鸥子';
+  box.hidden = false;
+  try { document.body.classList.toggle('no-gull', !GULL.on); } catch (e) {}
+  var cb = document.querySelector('#gullon');
+  if (cb) {
+    cb.checked = GULL.on;
+    cb.onchange = function () { gullSet(cb.checked); };
+  }
+  gullSeenLoad();
+  gullNote();
+  if (GULL.on) { gullLoad(); gullTimer(); }
+}
+
 function applyFilters() {
   if (DIRTY) rebuild();
   var q = sel.q.toLowerCase();
@@ -4248,8 +4806,12 @@ function renderFiles() {
     r.appendChild(el('span', 'n', d.n));
     if (stale) r.style.color = 'var(--warn)';
     r.onclick = function () {
-      if (on && !stale) { sel.day = d.day; refresh(true); }
-      else loadDays([d]);
+      if (on && !stale) {
+        sel.day = d.day; refresh(true);
+        // 鸥子序列 2。只在【选中某一天】时说 ——「全部」那一行是取消筛选，
+        // 那会儿 {日期} 根本没有值，硬说就成了一句半截话。
+        gullFire(2, { day: d.day });
+      } else loadDays([d]);
     };
     box.appendChild(r);
   });
@@ -4377,7 +4939,13 @@ function renderSidebar() {
     var l = el('span', 'lbl', e.name);
     l.style.color = colorOf(e.sid);
     r.appendChild(l); r.appendChild(el('span', 'n', e.n));
-    r.onclick = function () { sel.sender = (sel.sender === e.sid ? null : e.sid); refresh(true); };
+    r.onclick = function () {
+      var pick = (sel.sender === e.sid) ? null : e.sid;
+      sel.sender = pick;
+      refresh(true);
+      // 鸥子序列 3。再点一次是【取消】只看他，那一下不说话。
+      if (pick != null) gullFire(3, { sid: pick });
+    };
     sbox.appendChild(r);
   });
 
