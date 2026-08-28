@@ -540,6 +540,31 @@
   body.pc{overflow:hidden}
 
   /*
+   * 暂时不显示某几条（录视频用）。
+   *
+   * 只在【挑选模式】下才看得见这些样式 —— 平时那几条是直接不进 view 的，
+   * 连一个空位都不留。
+   */
+  .msg .hidebtn{position:absolute;right:6px;top:4px;z-index:2;
+    padding:2px 8px;font-size:11px;border-radius:6px;cursor:pointer;
+    background:var(--panel2);color:var(--mut);border:1px solid var(--line);
+    font-family:inherit;opacity:0;transition:opacity .12s}
+  body.picking .msg{position:relative}
+  body.picking .msg:hover .hidebtn,body.picking .msg.hid .hidebtn{opacity:1}
+  /* 手机上没有 hover，一律显出来 */
+  @media(hover:none){ body.picking .msg .hidebtn{opacity:1} }
+  .msg .hidebtn:hover{border-color:var(--bad);color:var(--bad)}
+  body.picking .msg.hid{opacity:.34}
+  body.picking .msg.hid .hidebtn{border-color:var(--ok);color:var(--ok);opacity:1}
+  .hidetag{font-size:11px;color:var(--ok);border:1px solid rgba(134,239,172,.45);
+    border-radius:5px;padding:0 5px;margin-left:6px}
+  #hidebar{display:none;align-items:center;gap:10px;flex-wrap:wrap;
+    padding:7px 16px;background:rgba(134,239,172,.10);
+    border-bottom:1px solid var(--line);font-size:12.5px;color:var(--tx);flex:0 0 auto}
+  body.picking #hidebar{display:flex}
+  #hidebar b{color:var(--ok)}
+
+  /*
    * 屏蔽头像 / ID 的那个面板。
    *
    * 结构上刻意和资料页分开：资料页是【看真的】，这里是【设假的】，
@@ -743,6 +768,11 @@
     <button class="btn" id="b_mask">屏蔽头像 / ID…</button>
     <div class="note" id="masknote"></div>
   </div>
+  <div class="sec">
+    <h2>暂时不显示</h2>
+    <button class="btn" id="b_pick">挑选要藏的消息</button>
+    <div class="note" id="hidenote"></div>
+  </div>
   <div class="sec"><h2>统计</h2><div id="stats"></div></div>
 
   <div style="flex:1"></div>
@@ -758,6 +788,7 @@
     <span class="spacer"></span>
     <input type="search" id="q" placeholder="搜索消息内容…">
   </div>
+  <div id="hidebar"></div>
   <div id="deep"></div>
   <!--
     正文列 + 右边预留的那一栏。
@@ -970,7 +1001,7 @@ function savePref() {
     localStorage.setItem('simco.pref',
       JSON.stringify({ realm: sel.realm, dim: sel.dimOthers, room: sel.room,
                        w: sel.width, mode: sel.mode, ct: sel.calcTab,
-                       mask: MASK }));
+                       mask: MASK, hide: hideList() }));
   } catch (e) { /* 存不了就算了，不影响使用 */ }
 }
 
@@ -2528,6 +2559,7 @@ function boot() {
   applyWidth();
   // 屏蔽名单也要在第一帧之前读回来 —— 晚一步的话，被屏蔽的人会先露一下脸
   maskLoad();
+  hideLoad();
   /*
    * 模式也在拿数据之前就定下来。
    * 上次停在计算器的人，如果等索引回来才切，会先闪一下聊天界面 ——
@@ -3933,6 +3965,78 @@ function renderAiCard() {
   box.appendChild(foot);
 }
 
+/*
+ * ===================== 暂时不显示某几条消息 =====================
+ *
+ * 录视频用的。有些对话和素材毫无关系，摆在画面里碍眼 ——
+ * 这个功能就是**让它们暂时不出现**，仅此而已：
+ *
+ *   · **不是删除**：数据一个字节都没动，线上的日文件照旧
+ *   · **不是屏蔽**：屏蔽是按【人】遮住头像和 ID，这个是按【条】整条不出现
+ *   · 名单只存在这台设备的浏览器里，别人打开看到的还是全的
+ *
+ * ⚠️ 实现上只有一件事要想清楚，其余全是自然结果：
+ *
+ *     **必须"先过滤，再分组"。**
+ *
+ * 消息流是按"连着的同一个人"分组的：一组里第一条画头像和名字，
+ * 后面几条只画一个时间槽。要是先分组再把某几条藏掉：
+ *   · 藏掉组里第一条 → 剩下的全是没有名字的时间槽，孤零零挂在那儿
+ *   · 一个人这一段全藏了 → 头像还在，底下什么都没有，非常诡异
+ *
+ * 而只要在【进入渲染之前】就把它们从 view 里拿掉，分组是照着剩下的重算的，
+ * 于是"整段都藏了就连头像、证书、时间一起消失，像他没说过话一样"
+ * 这件事【不需要任何特判】—— 它自己就成立了。
+ * 顺带日期分隔条、顶栏条数、深搜结果也全都自动对上。
+ */
+var HIDE = {};        // 消息 id -> 1
+var HIDE_N = 0;
+
+function hideLoad() {
+  HIDE = {}; HIDE_N = 0;
+  var raw = PREF.hide;
+  if (Object.prototype.toString.call(raw) !== '[object Array]') return;
+  raw.forEach(function (x) {
+    var id = Number(x) || 0;
+    if (id && !HIDE[id]) { HIDE[id] = 1; HIDE_N++; }
+  });
+}
+function hideList() {
+  var out = [];
+  Object.keys(HIDE).forEach(function (k) { out.push(Number(k)); });
+  return out;
+}
+function hideOn(id) { return !!HIDE[id]; }
+function hideToggle(id) {
+  id = Number(id) || 0;
+  if (!id) return;
+  if (HIDE[id]) { delete HIDE[id]; HIDE_N--; }
+  else { HIDE[id] = 1; HIDE_N++; }
+  savePref();
+  refresh();
+}
+function hideClear() {
+  HIDE = {}; HIDE_N = 0;
+  savePref();
+  refresh();
+}
+/*
+ * 挑选模式。
+ *
+ * 开着时，被藏起来的消息【照样显示】，只是变暗 + 标一个「已隐藏」——
+ * 不然藏完就找不回来了，只能靠「全部恢复」推倒重来。
+ * 关掉之后它们才真的从画面上消失。
+ *
+ * 这个开关【不存偏好】：它是编辑时的临时状态，
+ * 存下来的话下次开页会带着一堆变暗的消息，看着像坏了。
+ */
+var HIDE_PICK = false;
+function hidePick(on) {
+  HIDE_PICK = !!on;
+  try { document.body.classList.toggle('picking', HIDE_PICK); } catch (e) {}
+  refresh();
+}
+
 function applyFilters() {
   if (DIRTY) rebuild();
   var q = sel.q.toLowerCase();
@@ -3941,7 +4045,8 @@ function applyFilters() {
   // 没有别的筛选条件时直接用它，一次拷贝都不做。
   var base = roomMsgs();
   if (!q && !sel.day && sel.sender == null && !realmHides()) {
-    view = base;
+    // ⚠️ 快路径也得把"暂时不显示"那几条摘掉，不然它只在有别的筛选条件时才生效
+    view = (HIDE_N && !HIDE_PICK) ? base.filter(function (m) { return !HIDE[m.id]; }) : base;
     limit = 400;
     return;
   }
@@ -3955,6 +4060,7 @@ function applyFilters() {
     if (sel.sender != null && m.sid !== sel.sender) continue;
     if (hideRealm && m._r !== sel.realm) continue;
     if (q && m._s.indexOf(q) < 0) continue;
+    if (HIDE_N && !HIDE_PICK && HIDE[m.id]) continue;
     view.push(m);
   }
 
@@ -3978,6 +4084,7 @@ function applyFilters() {
       if (sel.day && e._d !== sel.day) continue;
       if (sel.sender != null && e.sid !== sel.sender) continue;
       if (hideRealm && e._r !== sel.realm) continue;
+      if (HIDE_N && !HIDE_PICK && HIDE[e.id]) continue;
       view.push(e);
       merged = true;
     }
@@ -4026,10 +4133,25 @@ function renderFeed() {
 
     // 变暗只在"选了某个领域且开着显示其他"时发生。隐藏模式下这些消息
     // 压根不在 view 里，也就轮不到这一句。
+    var isHid = HIDE_PICK && HIDE[m.id];
     var row = el('div', 'msg' + (grouped ? '' : ' first') +
                         ((m.retracted || m.deleted) ? ' gone' : '') +
                         ((markSet && markSet.has(m.id)) ? ' picked' : '') +
+                        (isHid ? ' hid' : '') +
                         ((dimOn && m._r !== sel.realm) ? ' dim' : ''));
+    /*
+     * 按钮【只在挑选模式下才建】。
+     * 平时一条消息一个多余节点，二十万条就是二十万个 —— 那是白扔的内存和渲染时间，
+     * 而它一年到头也用不上几次。
+     */
+    if (HIDE_PICK) {
+      (function (mm) {
+        var hb = el('button', 'hidebtn', HIDE[mm.id] ? '↩ 恢复' : '✕ 藏起来');
+        hb.title = HIDE[mm.id] ? '让它重新显示' : '暂时不显示这一条（数据不动）';
+        hb.onclick = function (ev) { ev.stopPropagation(); hideToggle(mm.id); };
+        row.appendChild(hb);
+      })(m);
+    }
     if (grouped) {
       row.appendChild(el('div', 'gutter', hmOf(m.t)));
     } else {
@@ -4061,6 +4183,7 @@ function renderFeed() {
       if (m.sup) head.appendChild(el('span', 'tag sup', '赞助'));
       if (m.cert) head.appendChild(el('span', 'tag cert', '证书 ' + m.cert));
       head.appendChild(el('span', 'tag realm', 'R' + m._r));
+      if (isHid) head.appendChild(el('span', 'hidetag', '已隐藏'));
       var ts = el('span', 'ts', timeOf(m.t));
       ts.title = new Date(m.t).toString();
       head.appendChild(ts);
@@ -4265,6 +4388,38 @@ function renderSidebar() {
     ['天数', S.days],
     ['时间跨度', hrs >= 48 ? (hrs / 24).toFixed(1) + ' 天' : hrs.toFixed(1) + ' 小时'],
   ];
+  var hn = $('#hidenote');
+  if (hn) {
+    hn.textContent = HIDE_N
+      ? ('已藏起 ' + HIDE_N + ' 条。只是不显示 —— 数据没动，别人打开还是全的。\n' +
+         '整段都藏了的话，那个人的头像、证书、时间也一起不出现。')
+      : '录视频时把无关的几条暂时藏掉。按【条】选，不是按人；也不是删除。';
+  }
+  var pb = $('#b_pick');
+  if (pb) pb.textContent = HIDE_PICK ? '挑完了（退出挑选）' : '挑选要藏的消息';
+  var hb = $('#hidebar');
+  if (hb) {
+    clear(hb);
+    if (HIDE_PICK) {
+      hb.appendChild(el('span', null, '挑选模式：'));
+      hb.appendChild(el('b', null, '已藏起 ' + HIDE_N + ' 条'));
+      hb.appendChild(el('span', null,
+        '　被藏的这会儿还看得见（变暗那些），退出挑选后才真的不显示。'));
+      var done1 = el('button', 'btn', '挑完了');
+      done1.onclick = function () { hidePick(false); };
+      hb.appendChild(done1);
+      if (HIDE_N) {
+        var undo = el('button', 'btn', '全部恢复');
+        undo.onclick = function () {
+          if (typeof confirm === 'function' &&
+              !confirm('把这 ' + HIDE_N + ' 条全都恢复显示？')) return;
+          hideClear();
+        };
+        hb.appendChild(undo);
+      }
+    }
+  }
+
   var mn = $('#masknote');
   if (mn) {
     mn.textContent = MASK.length
@@ -4413,6 +4568,7 @@ $('#dimother').onchange = function (e) {
 $('#qs').oninput = renderSidebar;
 $('#nq').oninput = renderNews;
 $('#b_mask').onclick = function () { mkOpen(); };
+$('#b_pick').onclick = function () { hidePick(!HIDE_PICK); };
 $('#burger').onclick = function () { document.body.classList.toggle('nav'); };
 $('#scrim').onclick = function () { document.body.classList.remove('nav'); };
 document.addEventListener('keydown', function (e) {
