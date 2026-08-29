@@ -210,7 +210,23 @@
    * 切模式时会把消息流的滚动位置存下来再还原：display:none 会让
    * scrollTop 归零，不还原的话每切一次回来都被弹到顶上。
    */
-  #calc,#news{display:none}
+  /*
+   * ⚠️ 【除了聊天记录，每一块都必须在这里默认藏起来】。
+   *
+   * 显示的写法是"加 body.mode-X 才显示"，藏的写法是这一行 ——
+   * 两半必须配套。漏掉一块的后果不是"那一块打不开"，而是
+   * **那一块在所有模式里都露着**：<div> 的默认 display 是 block，
+   * 而 #wrap 是个 flex 行，于是它就直接排在聊天记录旁边。
+   *
+   * 地图模拟就漏了。表现分两档，而两档看起来完全是两个毛病：
+   *   电脑上  聊天记录右边多出一条 380px 的地图，还带一整套自己的模式按钮
+   *   手机上  这 380px 把 390px 的屏幕占光，正文被挤成 8px ——
+   *           聊天记录 / 计算器 / 文章总结 / 左上角菜单【全都没了】
+   * 手机上那一档尤其像"页面整个坏了"，根本不会往"某一块忘了藏"上想。
+   *
+   * viewer/test-viewer.js 里按 MODES 逐个钉住了，再加第五个模式漏不掉。
+   */
+  #calc,#news,#map{display:none}
   body.mode-calc #side,body.mode-calc #main{display:none}
   body.mode-calc #calc{display:flex;flex-direction:column;flex:1;min-width:0}
   /*
@@ -313,12 +329,18 @@
   /* 左右两栏。窄屏叠起来，左边那栏排到下面去（它是参考，不是主线） */
   .mcols{display:grid;grid-template-columns:212px minmax(0,1fr);gap:18px;
     align-items:start}
-  @media(max-width:900px){
-    .mcols{grid-template-columns:1fr}
-    .mleft{order:2}
-  }
   /* 左栏：贴左、跟着滚、小而密 */
   .mleft{position:sticky;top:0}
+  /*
+   * ⚠️ 窄屏这一档要【写在 .mleft 后面】。
+   *    写在前面的话，下面那条不带媒体查询的 position:sticky 会把它盖掉
+   *    （同权重，后来者胜）—— 表现是手机上那栏一直吸在顶上挡着正文，
+   *    而你按"我明明写了窄屏规则"去查，怎么看都是对的。
+   */
+  @media(max-width:900px){
+    .mcols{grid-template-columns:1fr}
+    .mleft{order:2;position:static}
+  }
   .mside{background:var(--panel);border:1px solid var(--line);border-radius:9px;
     padding:8px 10px}
   .msideh h3{margin:0 0 6px;font-size:11px;color:var(--dim);font-weight:700;
@@ -1095,7 +1117,7 @@ var DATA = './data';
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = '9410850a72f2';
+var PAGE_BUILD = '7d6863913548';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -5274,6 +5296,11 @@ var GULL_IMG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAALQAAACzCAMAAAAXFs
 /*
  * ⚠️ 另外三张脸。**空字符串 = 没传，回落到平常那张**，不是显示成空白。
  *
+ *    这四张【现在是兜底】了：采集端「鸥子图片」文件夹里放了图的话，
+ *    整套会被 data/gullimg.json 顶掉（见下面 GULL_PUB）。
+ *    留着它们不是冗余 —— 没有它们的话，采集端还没配好 / 取不到 gullimg.json 的
+ *    那段时间里，右下角是个空框。
+ *
  *    这四行的写法（var GULL_IMGn = '…';）是「鸥子换图」那个工具认的锚点，
  *    改写法之前先去改 tools/gull-swap.tpl.html 里的正则 ——
  *    那个工具在他电脑上跑，我这边跑测试一辈子也发现不了它坏了。
@@ -5285,11 +5312,109 @@ var GULL_IMG4 = '';   // 4 骄傲
 var GULL_FACE_TOP = 4;
 var GULL_FACE_NAME = ['', '平常', '俏皮', '惊讶', '骄傲'];
 
-/** 第 n 张脸；没传那张就用平常那张。 */
+/*
+ * ============ 从采集端发下来的那套图（data/gullimg.json）============
+ *
+ * 上面那四个常量是【烧在这个文件里】的。想换一张，就得改这个文件、
+ * 重新生成 worker.js、两边各粘一遍 —— 换一张图走一遍完整发版。
+ *
+ * 所以图现在和台词走同一条路：他把图片拖进云端硬盘的「鸥子图片」文件夹，
+ * 采集端发成 gullimg.json，这里取下来【整套顶掉】上面那四个常量。
+ * 取不到 / 没发过 / 404 —— 照旧用烧在这里的那只，一个报错都不出现。
+ *
+ * ⚠️ **整套顶掉，不是一张一张挑。**
+ *    混着用的话："平常"是新画的、"惊讶"还是老海鸥 —— 两只不同的鸟轮流出现，
+ *    而两边各自都"正常工作"，一条报错都没有。看着就像页面坏了。
+ *    所以发下来的那套里缺哪张，就回落到【发下来的那张平常】。
+ *    连平常都没有 = 这套不启用（on 恒为 false），整套退回内置。
+ */
+var GULL_PUB = { on: false, n: 0, w: 0, img: [null, null, null, null, null] };
+
+/** 第 n 张脸。发下来那套优先；哪一层都缺就用平常那张。 */
 function gullFaceImg(n) {
+  var i = Math.floor(Number(n) || 1);
+  if (!(i >= 1 && i <= GULL_FACE_TOP)) i = 1;
+  if (GULL_PUB.on) return GULL_PUB.img[i] || GULL_PUB.img[1];
   var a = [GULL_IMG, GULL_IMG, GULL_IMG2, GULL_IMG3, GULL_IMG4];
-  var v = a[Number(n) || 1];
-  return v || GULL_IMG;
+  return a[i] || GULL_IMG;
+}
+
+/**
+ * 第 n 张脸【真的有自己那张图】吗（而不是在借平常那张）。
+ *
+ * ⚠️ 不能写成 gullFaceImg(f) === gullFaceImg(1) 来判 ——
+ *    他要是把同一张图传了两遍，那样会说"这张还没传"，
+ *    而他明明传了。要判的是"有没有这一格"，不是"像不像"。
+ */
+function gullHasFace(f) {
+  if (f === 1) return true;
+  if (GULL_PUB.on) return !!GULL_PUB.img[f];
+  return !!([null, null, GULL_IMG2, GULL_IMG3, GULL_IMG4][f]);
+}
+
+/*
+ * 只收 data:image/…;base64,… 这一种。
+ *
+ * 这份东西和台词一样是【经采集端进来的不可信文本】，而它最终会变成
+ * <img src>。不卡死格式的话，一个 javascript: 就能从这儿进来 ——
+ * 台词那边守着 textContent，图这边也得有自己的门。
+ */
+function gullImgOk(s) {
+  return typeof s === 'string' && s.length < 3000000 &&
+    /^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(s);
+}
+
+/**
+ * 画多大：注一条 <style>，**不要写 img.style.width**。
+ *
+ * 行内样式会把手机那档媒体查询整个盖掉 —— 表现是手机上鸥子和桌面一样大，
+ * 把半个屏幕占了，而在电脑上怎么看都是对的。
+ * 注进 <head> 末尾的规则和原来那条同权重、排在后面，所以正常胜出，
+ * 而媒体查询那条照样管用。
+ */
+var GULL_W_STYLE = null;
+function gullImgWidth(w) {
+  if (!(w >= 40 && w <= 200)) return;
+  if (!GULL_W_STYLE) {
+    GULL_W_STYLE = document.createElement('style');
+    GULL_W_STYLE.id = 'gullw';
+    document.head.appendChild(GULL_W_STYLE);
+  }
+  var mob = Math.max(40, Math.round(w * 70 / 88));
+  GULL_W_STYLE.textContent = '#gull .gimg{width:' + w + 'px}' +
+    '@media(max-width:560px){#gull .gimg{width:' + mob + 'px}}';
+}
+
+/*
+ * 取那套图。**和台词分两趟取**：台词几 KB、图几十 KB，
+ * 合成一个包的话他改一句词，每个访客就要把图重新下一遍。
+ *
+ * 和台词一样要先过 indexReady() —— 不等的话在 GitHub 站上必 404
+ * （那边只有 .json.gz），于是"CF 能换图、GitHub 换不了"，
+ * 而这种两边不一样的毛病，不把两个站摆在一起看是发现不了的。
+ */
+function gullImgLoad() {
+  if (GULL.ip) return GULL.ip;
+  GULL.ip = indexReady().then(function () {
+    return getPack(DATA + '/gullimg.json');
+  }).then(function (j) {
+    var src = (j && j.imgs) || {};
+    var got = [null, null, null, null, null], n = 0;
+    for (var i = 1; i <= GULL_FACE_TOP; i++) {
+      var v = src[i] != null ? src[i] : src[String(i)];
+      if (gullImgOk(v)) { got[i] = v; n++; }
+    }
+    if (!got[1]) return;              // 没有平常那张 → 整套不启用，见上面
+    GULL_PUB.on = true; GULL_PUB.img = got; GULL_PUB.n = n;
+    var w = Math.floor(Number(j && j.w));
+    if (w >= 40 && w <= 200) { GULL_PUB.w = w; gullImgWidth(w); }
+    // 已经挂在屏幕上的那张要立刻换掉（这一趟是异步的，鸥子早画出来了）
+    var img = document.querySelector('#gimg');
+    if (img) img.src = gullFaceImg(GULL.face);
+  }).catch(function () {
+    /* 404 / 断网 / 从来没发过 —— 用烧在页面里的那只，不报错、不打扰 */
+  }).then(function () { gullNote(); });
+  return GULL.ip;
 }
 
 /*
@@ -5328,6 +5453,7 @@ var GULL = {
   lines: null,            // [{lead, text, seq, k}]
   state: 'idle',          // idle | wait | ok
   p: null,                // 取台词那一趟的 Promise（只跑一趟，见 gullLoad）
+  ip: null,               // 取那套图那一趟的 Promise（同上，见 gullImgLoad）
   src: '',                // 'sheet' | 'builtin'
   seen: {},               // 行指纹 -> 出现过几次
   last: {},               // 序列 -> 上一句的指纹
@@ -5762,7 +5888,7 @@ function gullSet(on) {
   try { document.body.classList.toggle('no-gull', !GULL.on); } catch (e) {}
   savePref();
   gullNote();
-  if (GULL.on) { gullLoad(); gullTimer(); }
+  if (GULL.on) { gullLoad(); gullImgLoad(); gullTimer(); }
   else { gullQuiet(); if (GULL.timer) { clearTimeout(GULL.timer); GULL.timer = 0; } }
 }
 
@@ -5794,7 +5920,7 @@ function gullNote() {
   (GULL.lines || []).forEach(function (l) { if (l.face > 1) wantFace[l.face] = 1; });
   var noImg = [];
   Object.keys(wantFace).map(Number).sort().forEach(function (f) {
-    if (gullFaceImg(f) === GULL_IMG) noImg.push(GULL_FACE_NAME[f]);
+    if (!gullHasFace(f)) noImg.push(GULL_FACE_NAME[f]);
   });
 
   n.textContent =
@@ -5804,6 +5930,14 @@ function gullNote() {
     (empty.length
       ? '　这几路表里还没写，先用内置的：' + empty.join('、') + '。'
       : '') +
+    /*
+     * 图是从哪儿来的，得写出来。
+     * 不写的话："我换了图怎么没变" 和 "我根本没换过图" 在屏幕上长得一模一样，
+     * 而这两件事要去的地方完全不同（一个查文件夹，一个查有没有发布过）。
+     */
+    (GULL_PUB.on
+      ? '　图来自采集端的「鸥子图片」文件夹（' + GULL_PUB.n + ' 张）。'
+      : '　图是烧在页面里的那套。') +
     (noImg.length
       ? '　这几种表情表里用到了、但图还没传，先用平常那张：' + noImg.join('、') + '。'
       : '');
@@ -5826,7 +5960,7 @@ function gullBoot() {
   }
   gullSeenLoad();
   gullNote();
-  if (GULL.on) { gullLoad(); gullTimer(); }
+  if (GULL.on) { gullLoad(); gullImgLoad(); gullTimer(); }
 }
 
 function applyFilters() {
