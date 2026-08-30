@@ -1174,7 +1174,7 @@ var DATA = './data';
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = 'a16f3a27dfc1';
+var PAGE_BUILD = '4cc9f4b3ce0e';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -2660,7 +2660,8 @@ var MAP_RUN_MAX = 48;         // 最多几小时
 var MAP = (function () {
   var d = { list: [], cost: {}, wage: {}, prod: 0, sale: 0,
             execs: [], seats: {}, execOpen: false,
-            t0: 0, cur: 0, anchor: 0, setupH: 0, cash0: MAP_CASH0, ev: [],
+            t0: 0, cur: 0, anchor: 0, setupH: 0, cash0: MAP_CASH0,
+            cuPrice: null, pick: '', ev: [],
             sel: null, sell: null };
   try {
     var o = JSON.parse(localStorage.getItem('simco.map') || 'null');
@@ -2681,6 +2682,8 @@ var MAP = (function () {
       d.cur = Math.max(0, Math.floor(Number(o.cur) || 0));
       d.setupH = (o.setupH === undefined) ? 0 : Math.floor(Number(o.setupH));
       d.cash0 = isFinite(Number(o.cash0)) ? Number(o.cash0) : MAP_CASH0;
+      d.cuPrice = (o.cuPrice == null) ? null : Number(o.cuPrice);
+      if (typeof o.pick === 'string') d.pick = o.pick;
       /*
        * 老版本（v5 以前）把点数挂在位置上：exec:{coo:{mg,ac,cm,sc,age}}。
        * 就地搬成"人 + 座位"，一条都不丢 —— 不搬的话他上一版配好的高管
@@ -2717,7 +2720,7 @@ function mapSave() {
         prod: MAP.prod, sale: MAP.sale,
         execs: MAP.execs, seats: MAP.seats, execOpen: MAP.execOpen,
         t0: MAP.t0, cur: MAP.cur, anchor: MAP.anchor, setupH: MAP.setupH,
-        cash0: MAP.cash0, ev: MAP.ev }));
+        cash0: MAP.cash0, cuPrice: MAP.cuPrice, pick: MAP.pick, ev: MAP.ev }));
   } catch (e) {}
 }
 
@@ -2780,7 +2783,24 @@ function mapSetAnchor() {
   MAP.anchor = H;
   if (Math.floor(Number(MAP.setupH)) < H) MAP.setupH = -1;
   MAP.cur = H;
+  /*
+   * ⚠️ 定锚点时，**不在任何位置上的高管直接删掉**（他定的规矩）。
+   *    留着的话，锚点之后又改不了座位，那些人就成了永远上不了岗、
+   *    却一直挂在名单里的幽灵。
+   */
+  var seated = {};
+  MAP_EXEC_SEATS.forEach(function (st) {
+    var id = (MAP.seats || {})[st.k];
+    if (id) seated[id] = 1;
+  });
+  MAP.execs = mapExecs().filter(function (m) { return seated[m.id]; });
   mapSave(); renderMap();
+  /*
+   * 定锚点是这个模式里唯一【不可逆】的一下，所以鸥子在这儿也说一句
+   * （和"切到游戏模拟"同一路，序列 6）。
+   * 放在状态改完之后 —— 台词里写 {模式} 这类记号时，取到的才是新状态。
+   */
+  gullFire(6, {});
 }
 
 /** 现金：起始那笔 + 到第 H 小时为止所有事件的收支。同样是【算出来的】。 */
@@ -2801,7 +2821,7 @@ function mapCashDay(H) {
 function mapReset() {
   MAP.t0 = mapHourMs(Date.now());
   MAP.anchor = 0; MAP.cur = 0; MAP.setupH = 0;
-  MAP.cash0 = MAP_CASH0;
+  MAP.cash0 = MAP_CASH0; MAP.cuPrice = null;
   MAP.ev = []; MAP.list = []; MAP.cost = {}; MAP.wage = {};
   MAP.prod = 0; MAP.sale = 0;
   MAP.execs = []; MAP.seats = {};
@@ -2816,22 +2836,149 @@ function mapExecs() {
   if (Object.prototype.toString.call(MAP.execs) !== '[object Array]') MAP.execs = [];
   return MAP.execs;
 }
-function mapExecById(id) {
+/**
+ * 第 H 小时【在岗的】所有人：初始那几个 + 招聘已经完成的。
+ * 还在招的不算 —— 但那把椅子占着（见 mapHiringAt）。
+ */
+function mapExecsAt(H) {
+  var out = mapExecs().slice();
+  mapEv().forEach(function (e) {
+    if (e.t !== 'hire' || e.h + e.dur > H) return;
+    out.push({ id: e.id, n: e.n, mg: e.mg, ac: e.ac, cm: e.cm, sc: e.sc,
+               age: e.age, kind: e.kind, spec: e.spec, since: e.h + e.dur,
+               seat: e.seat, hired: true });
+  });
+  return out;
+}
+function mapExecById(id, H) {
   var got = null;
-  mapExecs().forEach(function (m) { if (m.id === id) got = m; });
+  mapExecsAt(H === undefined ? mapCur() : H).forEach(function (m) {
+    if (m.id === id) got = m;
+  });
   return got;
 }
-/** 坐在这个位置上的那个人（没人就是 null）。 */
-function mapSeatMan(seatKey) {
-  return mapExecById((MAP.seats || {})[seatKey]);
+/** 坐在这个位置上的那个人（没人就是 null）。招来的人天生就在自己那把椅子上。 */
+function mapSeatMan(seatKey, H) {
+  H = (H === undefined) ? mapCur() : H;
+  var byMap = (MAP.seats || {})[seatKey];
+  var got = null;
+  mapExecsAt(H).forEach(function (m) {
+    if (m.hired ? (m.seat === seatKey) : (byMap && m.id === byMap)) got = m;
+  });
+  return got;
 }
 var MAP_EXEC_SEQ = 1;
-function mapHire() {
-  if (!mapSetupOn()) return;
-  mapExecs().push({ id: 'x' + (Date.now() % 1e7) + '-' + (MAP_EXEC_SEQ++),
-                    n: '高管 ' + (mapExecs().length + 1),
-                    mg: 0, ac: 0, cm: 0, sc: 0, age: MAP_EXEC_AGE_MIN });
+var MAP_HIRE_HOURS = 10;      // 招一个人要多久
+
+/*
+ * ============================ 招人：掷一次骰子 ============================
+ *
+ * 出了初始小时，人是【招】来的，不是填出来的 —— 花 10 小时，
+ * 资质当场随机，而且**全是隐藏数据**：界面上只显示点数，
+ * 不显示他是专精还是笨蛋。
+ *
+ *   15%  专精   专精四个点数其中之一；那一项 50% 给 2 点、40% 给 1、10% 给 3
+ *   45%  笨蛋   50% 四项全 0；50% 随便一项给 1
+ *   40%  正常   其余三项各 1；其中一项 50% 给 1、50% 给 2
+ *
+ * 到了「高管经验」（14:00 UTC）那一刻：专精**稳定** +1 点自己那一项，
+ * 正常人 50%，笨蛋不涨。
+ *
+ * ⚠️ 两处地方假设过，等你说了再改：
+ *   · 专精的另外三项我按正常人那样给了 1（不然专精会比正常人全面更差）
+ *   · 笨蛋涨不涨经验你没说，先按不涨
+ */
+function mapRollExec() {
+  var r = Math.random(), st = { mg: 0, ac: 0, cm: 0, sc: 0 };
+  var keys = MAP_EXEC_STATS.map(function (x) { return x.k; });
+  var pick = keys[Math.floor(Math.random() * 4)];
+  if (r < 0.15) {
+    keys.forEach(function (k) { st[k] = 1; });
+    var q = Math.random();
+    st[pick] = q < 0.50 ? 2 : (q < 0.90 ? 1 : 3);
+    return { kind: 'spec', spec: pick, st: st };
+  }
+  if (r < 0.60) {
+    if (Math.random() < 0.5) st[pick] = 1;
+    return { kind: 'dud', spec: pick, st: st };
+  }
+  keys.forEach(function (k) { st[k] = 1; });
+  if (Math.random() < 0.5) st[pick] = 2;
+  return { kind: 'norm', spec: pick, st: st };
+}
+
+/**
+ * 「高管经验」那一刻涨不涨点。
+ * ⚠️ 用【认种子的随机】——同一个人、同一次经验，翻多少遍都是同一个结果。
+ *    用 Math.random() 的话往回翻一次时间点数就变了，回溯当场作废。
+ */
+function mapSeeded(seed) {
+  var h = 2166136261, str = String(seed);
+  for (var i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i); h = Math.imul(h, 16777619);
+  }
+  h ^= h >>> 15; h = Math.imul(h, 2246822507);
+  h ^= h >>> 13; h = Math.imul(h, 3266489909);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+/** 从第 a 小时到第 b 小时之间，跨过几次 14:00 UTC 的「高管经验」。 */
+function mapExpCount(a, b) {
+  var n = 0;
+  for (var h = Math.max(0, a) + 1; h <= b; h++) {
+    if (new Date(mapMsAt(h)).getUTCHours() === 14) n++;
+  }
+  return n;
+}
+/** 这个人在第 H 小时某一项是几点：底子 + 攒下来的经验。 */
+function mapExecStat(man, key, H) {
+  var base = Number(man[key]) || 0;
+  if (!man.kind || man.since == null) return base;
+  var n = mapExpCount(man.since, H), got = 0;
+  for (var i = 0; i < n; i++) {
+    if (man.kind === 'spec') { if (man.spec === key) got++; }
+    else if (man.kind === 'norm' && man.spec === key) {
+      if (mapSeeded(man.id + ':' + key + ':' + i) < 0.5) got++;
+    }
+  }
+  return base + got;
+}
+
+/**
+ * 招人。**必须招进一个位置** —— 他定的：高管只能在位置里招。
+ * 初始小时是白送、立刻到岗；出了那一格要花 10 小时。
+ */
+function mapHire(seatKey) {
+  if (!mapCanEdit()) return;
+  var H = mapCur();
+  if (mapSetupOn()) {
+    var id0 = 'x' + (Date.now() % 1e7) + '-' + (MAP_EXEC_SEQ++);
+    mapExecs().push({ id: id0, n: '高管 ' + (mapExecs().length + 1),
+                      mg: 0, ac: 0, cm: 0, sc: 0, age: MAP_EXEC_AGE_MIN,
+                      kind: 'norm', spec: 'mg', since: 0 });
+    if (seatKey) mapSeat(seatKey, id0);
+    else { mapSave(); renderMap(); }
+    return;
+  }
+  if (!seatKey || mapSeatMan(seatKey)) return;          // 只能招进空位置
+  if (mapHiringAt(seatKey, H)) return;                  // 已经在招了
+  if (H + MAP_HIRE_HOURS > mapWinEnd()) return;
+  var roll = mapRollExec();
+  mapEv().push({ t: 'hire', h: H, dur: MAP_HIRE_HOURS, seat: seatKey,
+                 id: 'x' + (Date.now() % 1e7) + '-' + (MAP_EXEC_SEQ++),
+                 n: '高管 ' + (mapExecs().length + mapEv().filter(function (e) {
+                   return e.t === 'hire'; }).length + 1),
+                 kind: roll.kind, spec: roll.spec,
+                 mg: roll.st.mg, ac: roll.st.ac, cm: roll.st.cm, sc: roll.st.sc,
+                 age: MAP_EXEC_AGE_MIN + Math.floor(Math.random() * 20) });
   mapSave(); renderMap();
+}
+/** 这个位置正在招人吗。 */
+function mapHiringAt(seatKey, H) {
+  var got = null;
+  mapEv().forEach(function (e) {
+    if (e.t === 'hire' && e.seat === seatKey && e.h <= H && H < e.h + e.dur) got = e;
+  });
+  return got;
 }
 function mapFire(id) {
   if (!mapSetupOn()) return;
@@ -2864,18 +3011,71 @@ function mapGoTo(h) {
 /** 在【当前这个小时】排一次升级。到点之前等级不动。 */
 function mapQueueUp(k, to) {
   var x = null;
-  MAP.list.forEach(function (b) { if (b.k === k) x = b; });
+  mapListAt(mapCur()).forEach(function (b) { if (b.k === k) x = b; });
   if (!x) return;
   if (!mapCanEdit()) return;
   var H = mapCur(), from = mapLvAt(x, H), n = Math.floor(Number(to));
   if (!isFinite(n) || n <= from || n > 999) { renderMap(); return; }
-  if (mapBusyAt(x, H)) { renderMap(); return; }        // 在施工就不许再排
+  if (mapBusyAt(x, H) || mapRunAt(k, H)) { renderMap(); return; }
   var bd = mapBld(x.b);
   if (!bd) return;
   var c = mapUpCost(bd, n, from);
+  /*
+   * ⚠️ 初始小时是【白送】的：那一格本来就是"随便捏"，
+   *    在那儿改等级不该扣料扣钱。出了那一格，升级和建造一样要付账。
+   */
+  var bill = mapSetupOn() ? { take: [], buy: [], cash: 0 } : mapMatBill(c);
+  if (bill.err) { renderMap(); return; }
   var dur = Math.max(1, Math.ceil(c.hr));              // 不足一小时也占一格
-  mapEv().push({ t: 'up', h: H, k: k, from: from, to: n, dur: dur });
+  if (H + dur > mapWinEnd()) { renderMap(); return; }
+  mapEv().push({ t: 'up', h: H, k: k, from: from, to: n, dur: dur,
+                 take: bill.take, buy: bill.buy, cash: bill.cash });
   mapSave(); renderMap();
+}
+
+/**
+ * 建造一栋新楼。**初始小时之外唯一能让场上多一栋的路** ——
+ * 那时候「摆上去」是白送的，这里要付材料、付钱、等时间。
+ *
+ * 用的是【建造】那条公式（m = 0，多一个 +1 份），不是升级那条。
+ */
+function mapQueueBuild(name, lv) {
+  if (!mapCanEdit()) return;
+  var bd = mapBld(name);
+  if (!bd) return;
+  var H = mapCur();
+  if (mapListAt(H).length >= MAP_MAX) return;
+  var n = Math.max(1, Math.min(999, Math.floor(Number(lv)) || 1));
+  var c = mapUpCost(bd, n, 0);                          // from=0 → 建造那条
+  var bill = mapMatBill(c);
+  if (bill.err) { renderMap(); return; }
+  var dur = Math.max(1, Math.ceil(c.hr));
+  if (H + dur > mapWinEnd()) { renderMap(); return; }
+  mapEv().push({ t: 'build', h: H, dur: dur, b: name, to: n,
+                 k: 'n' + (Date.now() % 1e7) + '-' + (MAP_SEQ++),
+                 take: bill.take, buy: bill.buy, cash: bill.cash });
+  mapSave(); renderMap();
+}
+
+/**
+ * 第 H 小时场上有哪几栋：初始摆的那几栋 + 那时候【已经建好】的。
+ *
+ * ⚠️ 建到一半的不算在里面 —— 但它占着名额（见 mapBuildingAt），
+ *    不然会出现"我明明在建，还能再排十栋"。
+ */
+function mapListAt(H) {
+  var out = MAP.list.slice();
+  mapEv().forEach(function (e) {
+    if (e.t !== 'build') return;
+    if (e.h + e.dur <= H) out.push({ k: e.k, b: e.b, lv: e.to, built: e.h });
+  });
+  return out;
+}
+/** 第 H 小时正在盖的那几栋（还没好，但占着名额）。 */
+function mapBuildingAt(H) {
+  return mapEv().filter(function (e) {
+    return e.t === 'build' && e.h <= H && H < e.h + e.dur;
+  });
 }
 /** 撤掉一个【还没到点】的安排。已经过去的不许撤 —— 那等于改历史。 */
 function mapDropEv(e) {
@@ -2914,7 +3114,7 @@ function mapItem(id) {
 /** 场上所有建筑的等级加起来 —— 管理费就看这个。 */
 function mapTotalLv() {
   var n = 0;
-  MAP.list.forEach(function (b) { n += mapLvNow(b); });
+  mapListAt(mapCur()).forEach(function (b) { n += mapLvNow(b); });
   return n;
 }
 /** 没有高管时的管理费系数。170 级 = 1.0（也就是 100%）。 */
@@ -2946,7 +3146,7 @@ function mapExecPoints() {
     var man = mapSeatMan(seat.k);
     if (!man) return;                       // 空椅子什么都不给
     MAP_EXEC_STATS.forEach(function (s) {
-      var v = Number(man[s.k]);
+      var v = mapExecStat(man, s.k, mapCur());
       if (!isFinite(v) || v <= 0) return;
       raw[s.k] += (s.k === seat.stat) ? v : v * MAP_EXEC_OFF;
     });
@@ -3043,6 +3243,13 @@ function mapStockAt(H) {
     });
   });
   mapEv().slice().sort(function (a, b) { return a.h - b.h; }).forEach(function (e) {
+    // 建造 / 升级：材料在【开工那一刻】就从仓库拿走
+    if ((e.t === 'up' || e.t === 'build') && e.h <= H) {
+      (e.take || []).forEach(function (u) { if (u.id != null) take(u.id, u.n); });
+    }
+    if (e.t === 'buy' && e.h <= H) {
+      add(e.item, e.units, e.price, 0);
+    }
     if (e.t === 'run' && e.h <= H) {
       (e.uses || []).forEach(function (u) { take(u.id, u.n); });
       var got = mapRunGot(e, H);
@@ -3106,6 +3313,66 @@ function mapRunAt(k, H) {
   return got;
 }
 
+// ------------------------------- 材料账单 -----------------------------------
+/*
+ * 建造和升级都要吃这四样：钢筋混凝土 / 砖块 / 木板 / 建造单位。
+ *
+ * 前三样是物品表里的东西（有 id、能进仓库）；**建造单位不是**，
+ * 它在物品表里根本没有编号 —— 所以单独给它一个价格框（MAP.cuPrice）。
+ * 不给的话表现是"我到处找不到哪儿能给建造单位定价"。
+ *
+ * 结账规矩：**仓库里有的先用，不够的按单价买、从现金里扣。**
+ * 这两条他都说了（"消耗材料"和"根据价格和数量消耗现金"），
+ * 而只做一边都会算错：只扣材料的话钱永远不动，只扣钱的话仓库永远不减。
+ */
+function mapCuPrice() {
+  /*
+   * ⚠️ 不能直接 Number(MAP.cuPrice)：**Number(null) 是 0，不是 NaN**。
+   *    那样"没填价"会被当成"价格是 0"，于是建造白送 ——
+   *    而它算出来的总价看着完全正常。
+   */
+  var raw = MAP.cuPrice;
+  if (raw === null || raw === undefined || raw === '') return null;
+  var v = Number(raw);
+  return (isFinite(v) && v >= 0) ? v : null;
+}
+function mapMatList() {
+  return [
+    { k: 'cc', id: MAP_DATA.mat.cc, n: mapName(MAP_DATA.mat.cc) },
+    { k: 'br', id: MAP_DATA.mat.br, n: mapName(MAP_DATA.mat.br) },
+    { k: 'pl', id: MAP_DATA.mat.pl, n: mapName(MAP_DATA.mat.pl) },
+    { k: 'cu', id: null, n: '建造单位' },
+  ];
+}
+/**
+ * 把一份消耗（{cc,br,pl,cu}）结成账：从仓库拿多少、还要买多少、一共花多少钱。
+ * 有一样没定价就 { err:'price', miss:[…] } —— 缺价按 0 算会得出一个
+ * 看着很便宜、其实是假的总价。
+ */
+function mapMatBill(cost) {
+  var take = [], buy = [], cash = 0, miss = [];
+  mapMatList().forEach(function (m) {
+    var need = cost[m.k] || 0;
+    if (!(need > 0)) return;
+    var price = null, have = 0;
+    if (m.id == null) {
+      price = mapCuPrice();
+    } else {
+      var g = mapStock(m.id);
+      if (g) { price = g.c; have = g.q; }
+    }
+    if (price === null) { miss.push(m.n); return; }
+    var from = Math.min(have, need), rest = need - from;
+    if (from > 0) take.push({ id: m.id, n: from, name: m.n });
+    if (rest > 0) {
+      buy.push({ id: m.id, n: rest, name: m.n, price: price });
+      cash += rest * price;
+    }
+  });
+  if (miss.length) return { err: 'price', miss: miss };
+  return { take: take, buy: buy, cash: cash };
+}
+
 /**
  * 一个事件到第 H 小时为止对现金的影响。
  *
@@ -3120,6 +3387,10 @@ function mapEvCash(e, H) {
     return -(e.matC || 0) - (e.wagePerH || 0) * ran;
   }
   if (e.t === 'sell') return (e.net || 0);
+  // 建造 / 升级：仓库不够的那部分是买来的，钱在开工那一刻付
+  if (e.t === 'up' || e.t === 'build') return -(e.cash || 0);
+  if (e.t === 'buy') return -(e.units * e.price);
+  if (e.t === 'hire') return 0;
   return 0;
 }
 
@@ -3201,7 +3472,7 @@ function mapMakeCost(it, bld, lv, hours) {
 function mapStartRun(k, itemId, kind, hours) {
   if (!mapCanEdit()) return;
   var x = null;
-  MAP.list.forEach(function (b) { if (b.k === k) x = b; });
+  mapListAt(mapCur()).forEach(function (b) { if (b.k === k) x = b; });
   if (!x) return;
   var H = mapCur();
   if (mapRunAt(k, H) || mapBusyAt(x, H)) return;     // 在跑 / 在施工就不许再开
@@ -3504,7 +3775,7 @@ function mapAtStart() { return mapSetupOn(); }
 
 function mapAdd(name) {
   if (!mapSetupOn()) return;
-  if (MAP.list.length >= MAP_MAX || !mapBld(name)) return;
+  if (mapListAt(mapCur()).length >= MAP_MAX || !mapBld(name)) return;
   MAP.list.push({ k: 'b' + (Date.now() % 1e7) + '-' + (MAP_SEQ++), b: name, lv: 1 });
   mapSave(); renderMap();
 }
@@ -3574,7 +3845,7 @@ function renderMap() {
   mapStockBust();
   clear(box);
   var cur = null;
-  MAP.list.forEach(function (x) { if (x.k === MAP.sel) cur = x; });
+  mapListAt(mapCur()).forEach(function (x) { if (x.k === MAP.sel) cur = x; });
   var topw = el('div', 'minner');
   renderMapTop(topw);
   box.appendChild(topw);
@@ -3839,26 +4110,12 @@ function renderMapLevel(box, x, b) {
   }
 }
 
-/**
- * 开工按钮 —— 每日成就（simboost）看的是这个。
- *
- * 他定的规则：生产和零售是同一个成就，**不叠加**；
- * 只要那个游戏日里有建筑【开始】工作过就拿 5 个，没开工就一个都没有。
- * 所以这里记的是"开始"这个动作，不是产量、也不是次数。
+/*
+ * ⚠️ 这里原来有个「在这一小时开工」按钮，**删掉了** —— 它是假的。
+ *    真正的开工是每个产品那一行的「开工 N 小时」，
+ *    simboost 由 mapStartRun 顺手记的 work 事件触发。
+ *    留着一个只管发成就、不真的生产的按钮，等于给了一条白拿 simboost 的路。
  */
-function renderMapWork(box, x) {
-  var H = mapCur(), got = mapWorkedToday(H);
-  var row = el('div', 'mlvbox');
-  var btn = el('button', 'btn' + (got ? '' : ' pri'), '在这一小时开工');
-  btn.onclick = function () { mapWorkNow(x.k); };
-  row.appendChild(btn);
-  row.appendChild(el('span', 'mu', got
-    ? ('这个游戏日已经开过工了 —— 成就拿过了，再开也不会再给 ' +
-       MAP_SIMBOOST_PER_DAY + ' 个')
-    : ('这个游戏日还没有任何建筑开工 —— 开一次就解锁 ' +
-       MAP_SIMBOOST_PER_DAY + ' 个 simboost')));
-  box.appendChild(row);
-}
 
 /**
  * 高管那一块。默认收起来 —— 展开是 16 个输入框，
@@ -3892,6 +4149,9 @@ function renderMapExec(box) {
   }
 
   var setup = mapSetupOn();
+  // ⚠️ 在岗的人要在【座位下拉框用到它之前】就算好 —— 放在下面的话
+  //    var 提升成 undefined，座位那一行 forEach 直接抛，整个模式白屏。
+  var ALLM = mapExecsAt(mapCur());
 
   /*
    * ---- 座位表：这把椅子上坐的是谁 ----
@@ -3920,12 +4180,18 @@ function renderMapExec(box) {
     var o0 = document.createElement('option');
     o0.value = ''; o0.textContent = '（空着）';
     sel.appendChild(o0);
-    mapExecs().forEach(function (m) {
+    ALLM.forEach(function (m) {
       var o = document.createElement('option');
       o.value = m.id; o.textContent = m.n;
       sel.appendChild(o);
     });
-    sel.value = (MAP.seats || {})[seat.k] || '';
+    /*
+     * ⚠️ 下拉框要显示【真正在这把椅子上的那个人】。
+     *    招来的人是绑在事件的 seat 上的，不走 MAP.seats ——
+     *    只读 MAP.seats 的话，明明有人在岗，框里却写着「（空着）」。
+     */
+    var sitting = mapSeatMan(seat.k);
+    sel.value = sitting ? sitting.id : ((MAP.seats || {})[seat.k] || '');
     sel.disabled = !setup;
     sel.onchange = function () {
       var v = sel.value;
@@ -3934,15 +4200,33 @@ function renderMapExec(box) {
     c1.appendChild(sel);
     tr.appendChild(c1);
 
-    var man = mapSeatMan(seat.k);
+    var man = sitting;
+    var hiring = mapHiringAt(seat.k, mapCur());
     MAP_EXEC_STATS.forEach(function (st) {
       var td = el('td', st.k === seat.stat ? 'mexon' : null);
-      td.appendChild(el('span', 'mexn',
-        man ? mnum(Number(man[st.k]) || 0) : '—'));
+      td.appendChild(el('span', 'mexn', man
+        ? mnum(mapExecStat(man, st.k, mapCur()))
+        : (hiring ? '…' : '—')));
       tr.appendChild(td);
     });
     tr.appendChild(el('td', null, man ? String(mapExecAgeAt(man, mapCur())) : '—'));
-    tr.appendChild(el('td', 'mexh2', seat.use || '（这一项还没接进算式）'));
+    var uc = el('td', 'mexh2');
+    if (hiring) {
+      uc.appendChild(el('span', 'mu',
+        '招聘中，还有 ' + (hiring.h + hiring.dur - mapCur()) + ' 小时'));
+    } else if (!man && !setup) {
+      /*
+       * 空位置直接在这一行招 —— 他定的：高管只能在位置里招。
+       * 资质是当场随机的，而且不给看（专精 / 正常 / 笨蛋全是隐藏数据）。
+       */
+      var hb = el('button', 'btn', '招人（' + MAP_HIRE_HOURS + ' 小时）');
+      hb.disabled = !mapCanEdit();
+      hb.onclick = function () { mapHire(seat.k); };
+      uc.appendChild(hb);
+    } else {
+      uc.appendChild(el('span', null, seat.use || '（这一项还没接进算式）'));
+    }
+    tr.appendChild(uc);
     tb.appendChild(tr);
   });
   var sc = el('div', 'mexscroll');
@@ -3956,17 +4240,20 @@ function renderMapExec(box) {
    */
   var ph = el('div', 'mexph');
   ph.appendChild(el('b', null, '高管'));
-  var hire = el('button', 'btn', '＋ 招一个');
-  hire.disabled = !setup;
-  hire.onclick = function () { mapHire(); };
-  ph.appendChild(hire);
-  if (!setup) {
+  if (setup) {
+    var hire = el('button', 'btn', '＋ 加一个');
+    hire.onclick = function () { mapHire(); };
+    ph.appendChild(hire);
+    ph.appendChild(el('span', 'mu', '　初始小时：点数和年龄随便填'));
+  } else {
     ph.appendChild(el('span', 'mu',
-      '　只有初始小时能招人 / 改点数 / 解雇 —— 现在只能调座位以外的都锁着'));
+      '　出了初始小时，人只能在【空位置那一行】招，花 ' + MAP_HIRE_HOURS +
+      ' 小时，资质当场随机（专精 / 正常 / 笨蛋是隐藏数据，不显示）。' +
+      '定锚点时，不在任何位置上的人会被删掉。'));
   }
   card.appendChild(ph);
 
-  if (mapExecs().length) {
+  if (ALLM.length) {
     var tb2 = el('table', 'mextb');
     var hr2 = document.createElement('tr');
     hr2.appendChild(el('th', 'mexh1', '名字'));
@@ -3975,12 +4262,12 @@ function renderMapExec(box) {
     hr2.appendChild(el('th', null, '现在'));
     hr2.appendChild(el('th', 'mexh1', ''));
     tb2.appendChild(hr2);
-    mapExecs().forEach(function (m) {
+    ALLM.forEach(function (m) {
       var tr2 = document.createElement('tr');
       var nc = el('td', 'mexh1');
       var ni = document.createElement('input');
       ni.type = 'text'; ni.value = m.n; ni.className = 'mexname';
-      ni.disabled = !setup;
+      ni.disabled = !setup || m.hired;
       ni.onchange = function () {
         var v = ni.value;
         setTimeout(function () {
@@ -3991,18 +4278,18 @@ function renderMapExec(box) {
       // 坐在哪儿，直接标出来 —— 不然一堆人分不清谁在岗
       var seatOf = null;
       MAP_EXEC_SEATS.forEach(function (st) {
-        if ((MAP.seats || {})[st.k] === m.id) seatOf = st.n;
+        if (mapSeatMan(st.k) && mapSeatMan(st.k).id === m.id) seatOf = st.n;
       });
       nc.appendChild(el('span', 'mu', seatOf ? '　' + seatOf : '　待岗'));
       tr2.appendChild(nc);
       MAP_EXEC_STATS.forEach(function (st) {
         var td = el('td');
-        var inp = mIn(m[st.k] == null ? '' : m[st.k], '0', function (v) {
+        var inp = mIn(mapExecStat(m, st.k, mapCur()), '0', function (v) {
           var n = Number(v);
           m[st.k] = (v === '' || !isFinite(n) || n < 0) ? 0 : n;
           mapSave(); renderMap();
         }, '54px');
-        inp.disabled = !setup;
+        inp.disabled = !setup || m.hired;
         td.appendChild(inp);
         tr2.appendChild(td);
       });
@@ -4013,13 +4300,13 @@ function renderMapExec(box) {
                                            : Math.max(MAP_EXEC_AGE_MIN, n);
         mapSave(); renderMap();
       }, '54px');
-      ai.disabled = !setup;
+      ai.disabled = !setup || m.hired;
       ac.appendChild(ai);
       tr2.appendChild(ac);
       tr2.appendChild(el('td', 'mexn', String(mapExecAgeAt(m, mapCur())) + ' 岁'));
       var dc = el('td', 'mexh1');
       var fire = el('button', 'btn', '解雇');
-      fire.disabled = !setup;
+      fire.disabled = !setup || m.hired;
       fire.onclick = function () {
         if (confirm('解雇「' + m.n + '」？')) mapFire(m.id);
       };
@@ -4031,8 +4318,9 @@ function renderMapExec(box) {
     sc2.appendChild(tb2);
     card.appendChild(sc2);
   } else {
-    card.appendChild(el('div', 'mnote2',
-      '还没有高管。' + (setup ? '点上面「＋ 招一个」。' : '要招人得回到初始小时。')));
+    card.appendChild(el('div', 'mnote2', '还没有高管。' + (setup
+      ? '点上面「＋ 加一个」，或者在座位那一行挑人。'
+      : '在上面某个空位置那一行点「招人」。')));
   }
 
 
@@ -4069,14 +4357,15 @@ function renderMapUp(box) {
   var h = el('div', 'msideh');
   h.appendChild(el('h3', null, '升级消耗'));
   side.appendChild(h);
-  if (!MAP.list.length) {
+  var LIST = mapListAt(mapCur());
+  if (!LIST.length) {
     side.appendChild(el('div', 'mnote2', '还没摆楼。'));
     box.appendChild(side);
     return;
   }
   // 按种类合并
   var by = {}, order = [];
-  MAP.list.forEach(function (x) {
+  LIST.forEach(function (x) {
     if (!by[x.b]) { by[x.b] = { n: x.b, cnt: 0, lv: 0, c: null }; order.push(x.b); }
     by[x.b].cnt++;
     by[x.b].lv += mapLvNow(x);
@@ -4088,7 +4377,7 @@ function renderMapUp(box) {
     // ⚠️ 每一栋各自算再相加。拿"等级之和"去套公式是错的 ——
     //    公式对等级是二次的，两栋 5 级 ≠ 一栋 10 级。
     var acc = { cc: 0, br: 0, pl: 0, cu: 0, hr: 0, f: 0 };
-    MAP.list.forEach(function (x) {
+    LIST.forEach(function (x) {
       if (x.b !== n) return;
       var c = mapUpCost(bd, mapLvNow(x));
       acc.f += c.f; acc.cc += c.cc; acc.br += c.br;
@@ -4156,21 +4445,78 @@ function renderMapList(box) {
       });
     sel.appendChild(g);
   });
+  /*
+   * ⚠️ 换了建筑要重画，而且【选中的那个得记住】。
+   *
+   *    下面那份"要多少料、花多少钱"是照着 sel.value 现算的。
+   *    不重画的话，屏幕上是上一个建筑的账、按钮建的是新选的那个；
+   *    重画了但不记住选中项的话，下拉框弹回第一个，
+   *    于是显示的又变回发电厂 —— 两种都是【看到一个数、建出另一个东西】，
+   *    而两个数看着都很正常。这两脚我在浏览器里都实测踩到了。
+   */
+  if (MAP.pick && mapBld(MAP.pick)) sel.value = MAP.pick;
+  sel.onchange = function () {
+    var v = sel.value;
+    setTimeout(function () { MAP.pick = v; mapSave(); renderMap(); }, 0);
+  };
   row.appendChild(sel);
-  var full = MAP.list.length >= MAP_MAX;
-  var add = el('button', 'btn pri', '确定，摆上去');
-  add.disabled = full;
-  add.onclick = function () { mapAdd(sel.value); };
-  row.appendChild(add);
+  var H0 = mapCur(), LIST = mapListAt(H0), doing = mapBuildingAt(H0);
+  var full = LIST.length + doing.length >= MAP_MAX;
+  var setup = mapSetupOn();
+
+  if (setup) {
+    // 初始小时：白送，直接摆上去
+    var add = el('button', 'btn pri', '确定，摆上去');
+    add.disabled = full;
+    add.onclick = function () { mapAdd(sel.value); };
+    row.appendChild(add);
+  } else {
+    /*
+     * 初始小时之外只能【建造】：付材料、付钱、等时间。
+     * 用的是建造那条公式（多一个 +1 份），不是升级那条。
+     */
+    var lvst = { v: 1 };
+    row.appendChild(el('span', 'ml', '建到'));
+    row.appendChild(mIn(1, '1', function (v) {
+      lvst.v = Math.max(1, Math.floor(Number(v)) || 1); renderMap();
+    }, '58px'));
+    row.appendChild(el('span', 'mu', '级'));
+    var bd0 = mapBld(sel.value);
+    var c0 = bd0 ? mapUpCost(bd0, lvst.v, 0) : null;
+    var bill0 = c0 ? mapMatBill(c0) : { err: 'price', miss: [] };
+    var bt = el('button', 'btn pri', '建造' +
+      (c0 ? '（' + Math.max(1, Math.ceil(c0.hr)) + ' 小时）' : ''));
+    bt.disabled = full || !mapCanEdit() || !!bill0.err;
+    bt.onclick = function () { mapQueueBuild(sel.value, lvst.v); };
+    row.appendChild(bt);
+    if (c0) {
+      row.appendChild(el('span', 'mu', bill0.err
+        ? ('这几样还没定价，建不了：' + bill0.miss.join('、'))
+        : ('要 ' + mnum(c0.cc) + ' 钢混 / ' + mnum(c0.br) + ' 砖块 / ' +
+           mnum(c0.pl) + ' 木板 / ' + mnum(c0.cu) + ' 建造单位' +
+           (bill0.cash > 0 ? '，其中要买 ' + mmoney(bill0.cash) : '，仓库里够'))));
+    }
+  }
   row.appendChild(el('span', 'mcount',
-    MAP.list.length + ' / ' + MAP_MAX + (full ? '　已经满了' : '')));
+    LIST.length + (doing.length ? '+' + doing.length + ' 在建' : '') +
+    ' / ' + MAP_MAX + (full ? '　已经满了' : '')));
   box.appendChild(row);
 
-  if (!MAP.list.length) {
-    box.appendChild(el('div', 'mempty', '还没摆任何建筑。上面挑一个，点「确定，摆上去」。'));
+  // 在建的那几栋单独摆出来 —— 不然"我明明点了建造，怎么什么都没有"
+  if (doing.length) {
+    var dl = el('div', 'mnote2', '在建：' + doing.map(function (e) {
+      return e.b + ' → ' + e.to + ' 级，还有 ' + (e.h + e.dur - H0) + ' 小时';
+    }).join('；'));
+    box.appendChild(dl);
+  }
+
+  if (!LIST.length) {
+    box.appendChild(el('div', 'mempty', setup
+      ? '还没摆任何建筑。上面挑一个，点「确定，摆上去」。'
+      : '场上还没有建筑。上面挑一个「建造」—— 要付材料和钱，还要等施工时间。'));
   } else {
     var grid = el('div', 'mgrid');
-    MAP.list.forEach(function (x) {
+    LIST.forEach(function (x) {
       var b = mapBld(x.b) || { cat: '?', mk: [] };
       var c = el('button', 'mcard');
       c.appendChild(el('div', 'mn', x.b));
@@ -4223,21 +4569,53 @@ function renderMapStock(box) {
     asel.appendChild(o);
   });
   addr.appendChild(asel);
-  var aval = mIn('', '单价', function () {}, '96px');
+  var aval = mIn('', '单价', function () {}, '84px');
   addr.appendChild(aval);
-  var abtn = el('button', 'btn', '记进仓库');
-  abtn.disabled = !mapSetupOn();
+  var aqty = mIn('', '数量', function () {}, '84px');
+  addr.appendChild(aqty);
+  /*
+   * 「购入」：初始小时是白送（那一格本来就随便捏），出了那一格是真的花钱 ——
+   * 单价 × 数量从现金里扣，货进仓库。
+   * 不扣钱的话，"买原料"就成了凭空变东西，整个现金模型都白做了。
+   */
+  var setupBuy = mapSetupOn();
+  var abtn = el('button', 'btn', setupBuy ? '填进仓库' : '购入');
+  abtn.disabled = !mapCanEdit();
   abtn.onclick = function () {
-    var n = Number(aval.value);
+    var n = Number(aval.value), q = Number(aqty.value);
     if (!isFinite(n) || n < 0) return;
+    if (!isFinite(q) || q <= 0) q = 1;
     var id = Number(asel.value);
-    MAP.cost[id] = { e: [] };
-    mapAddCost(id, 1, n, 0, 'buy');
+    if (setupBuy) {
+      mapAddCost(id, q, n, 0, 'buy');
+    } else {
+      mapEv().push({ t: 'buy', h: mapCur(), item: id, units: q, price: n });
+      mapSave();
+    }
     renderMap();
   };
   addr.appendChild(abtn);
-  addr.appendChild(el('span', 'mu', '手填的价不带时间（买来的没占产能）'));
+  addr.appendChild(el('span', 'mu', setupBuy
+    ? '初始小时：直接填进去，不花钱。买来的东西不带时间（没占产能）。'
+    : '单价 × 数量从现金里扣。买来的东西不带时间（没占产能）。'));
   box.appendChild(addr);
+
+  /*
+   * 建造单位的价。**它不在物品表里**（没有编号、进不了仓库），
+   * 所以只能单独给一个框 —— 不给的话表现是
+   * "建造说建造单位没定价，可我到处找不到哪儿能填"。
+   */
+  var cur2 = el('div', 'mrow0');
+  cur2.appendChild(el('span', 'ml', '建造单位单价'));
+  cur2.appendChild(mIn(MAP.cuPrice == null ? '' : MAP.cuPrice, '每个多少钱',
+    function (v) {
+      var n = Number(v);
+      MAP.cuPrice = (v === '' || !isFinite(n) || n < 0) ? null : n;
+      mapSave(); renderMap();
+    }, '96px'));
+  cur2.appendChild(el('span', 'mu',
+    '建造和升级都要吃它，但它不是物品、进不了仓库 —— 所以在这儿填。'));
+  box.appendChild(cur2);
   if (!ids.length) {
     box.appendChild(el('div', 'mempty',
       '仓库还是空的。\n' +
@@ -4303,7 +4681,6 @@ function renderMapOne(box, x) {
   box.appendChild(head);
 
   renderMapLevel(box, x, b);
-  renderMapWork(box, x);
 
   var wb = el('div', 'mlvbox');
   wb.appendChild(el('span', 'ml', '一级工资 / 小时'));
@@ -4459,7 +4836,7 @@ function renderMapItem(it, b, x, isR) {
     mapDoMake(out, it, b, x, st);
   }, '62px'));
   row.appendChild(el('span', 'mu', '小时（' + MAP_RUN_MIN + '~' + MAP_RUN_MAX + '）'));
-  var mk = el('button', 'btn', '算一算');
+  var mk = el('button', 'btn', '计算');
   mk.onclick = function () { mapDoMake(out, it, b, x, st); };
   row.appendChild(mk);
   d.appendChild(row);
@@ -4937,13 +5314,14 @@ function setMode(m) {
   else if (feed) feed.scrollTop = MODE_FEED_TOP;
   renderModeTabs();
   /*
-   * 鸥子：切到计算器 = 序列 4，切到文章总结 = 序列 5。
+   * 鸥子：切到计算器 = 序列 4，文章总结 = 序列 5，游戏模拟 = 序列 6。
    * ⚠️ 只在【真的换了】的时候说 —— renderModeTabs 每次都把按钮重建一遍，
    * 再点一次当前那个模式也会走到这里，那不算"切过来"。
    */
   gullShow();
   if (changed && to === 'calc') gullFire(4, {});
   if (changed && to === 'news') gullFire(5, {});
+  if (changed && to === 'map') gullFire(6, {});
 }
 
 function setCalcTab(t) {
@@ -6693,8 +7071,9 @@ var GULL_SEQ = {
   3: { cool: 900 },
   4: { cool: 900 },
   5: { cool: 900 },
+  6: { cool: 900 },
 };
-var GULL_SEQ_MAX = 5;
+var GULL_SEQ_MAX = 6;
 var GULL_EVERY_MIN = 50000;    // 序列 0 两句之间最短间隔
 var GULL_EVERY_MAX = 165000;   // 最长
 var GULL_SHOW_MS = 9500;       // 一句话在屏幕上挂多久
@@ -6739,6 +7118,7 @@ var GULL_BUILTIN = [
   { lead: '鸥子',       seq: 3, face: 1, text: '现在只看 {玩家} 一个人说话了，再点一次他的名字就退回全部。' },
   { lead: '游戏机制小提示', seq: 4, face: 4, text: '算之前先把品质加成填对，那一项最容易忘，也最影响结果。' },
   { lead: '鸥子',       seq: 5, face: 1, text: '这些文章是玩家自己写的，中文那段是 AI 翻的，看个大意就好。' },
+  { lead: '游戏机制小提示', seq: 6, face: 3, text: '定锚点之前想清楚 —— 锚点之前的一切就翻不回去了。' },
 ];
 
 /*
@@ -7144,7 +7524,8 @@ function gullSet(on) {
   else { gullQuiet(); if (GULL.timer) { clearTimeout(GULL.timer); GULL.timer = 0; } }
 }
 
-var GULL_SEQ_NAME = ['自己冒出来', '点鸥子', '选日期', '选玩家', '计算器', '文章总结'];
+var GULL_SEQ_NAME = ['自己冒出来', '点鸥子', '选日期', '选玩家', '计算器',
+                     '文章总结', '游戏模拟 / 定锚点'];
 
 /*
  * 侧栏那行小字。
