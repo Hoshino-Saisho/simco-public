@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Sim Companies 千里眼</title>
+<title>Sim Companies 聊天记录</title>
 <meta name="referrer" content="no-referrer">
 <!--
   安全策略说明（这是公开页面，所以每一条都有意义）：
@@ -1174,7 +1174,7 @@ var DATA = './data';
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = '4cc9f4b3ce0e';
+var PAGE_BUILD = 'bf5520b678dc';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -2016,6 +2016,14 @@ function calcProd(pr) {
  *
  * 几个建筑的时利加起来正好等于总时利（权重和为 1）——
  * 也就是"这条链的时利里，有多少是这个建筑挣的"。
+ *
+ * ---- 实际时利 ----
+ *
+ *     ★ 实际时利 = Σ(在工作的建筑时利) ÷ 在工作的建筑数
+ *
+ * 一条龙时利把所有等级·小时混在一起除，等于当成一栋楼算。
+ * 可是链跨两种建筑，就得真盖两栋 —— 两份地皮、两份建造成本。
+ * 所以再摊一次。没分到产品的建筑不进分母（它没在干活）。
  */
 
 /**
@@ -2071,13 +2079,40 @@ function calcChain(c) {
     b.weight = T > 0 ? b.hours / T : 0;
     // 几个建筑的时利加起来 = 总时利（权重和为 1）
     b.hourly = (hourly == null) ? null : b.weight * hourly;
+    // 「在工作」= 真的有自产步骤落在它头上。分了产品但全是外购的 → 耗时 0 → 不算
+    b.working = b.hours > 0;
   });
+
+  /*
+   * ---- 实际时利：把【在工作的】建筑的时利平分 ----
+   *
+   * 一条龙时利是「每个等级·小时」的利润，它把所有建筑的等级·小时混在一起除。
+   * 但一条链跨两种建筑，你就得**真的盖两栋楼**——两份地皮、两份建造成本。
+   * 所以再按"在工作的建筑数"摊一次：
+   *
+   *     实际时利 = Σ(在工作的建筑时利) ÷ 在工作的建筑数
+   *
+   * 没分到产品的建筑不进分母 —— 它根本没在干活，摊它头上没道理。
+   * 分了产品但那几步全是外购的也不进：耗时 0，同理。
+   *
+   * ⚠️ 和「一条龙时利」的区别，就是分母多了个建筑数：
+   * 没有 orphan（自产却没分楼）的时候，实际时利 = 一条龙时利 ÷ 建筑数，
+   * 所以一条链只用一栋楼时两个数完全一样，两栋楼就是一半。
+   */
+  var nWork = 0, sumWork = 0;
+  blds.forEach(function (b) {
+    if (!b.working) return;
+    nWork++;
+    if (b.hourly != null) sumWork += b.hourly;
+  });
+  var avgHourly = (hourly == null || nWork === 0) ? null : sumWork / nWork;
 
   var fin = null;
   steps.forEach(function (s) { if (s.final && fin == null) fin = s; });
 
   return { steps: steps, blds: blds, hours: T, profit: profit,
-           hourly: hourly, noRate: noRate, orphan: orphan, final: fin };
+           hourly: hourly, nWork: nWork, avgHourly: avgHourly,
+           noRate: noRate, orphan: orphan, final: fin };
 }
 
 /* ------------------------------ 状态 ------------------------------ */
@@ -2462,9 +2497,22 @@ function renderChain(box) {
   var k1 = cel('div', 'kpis');
   k1.appendChild(ckpi('利润', cnice(R.profit), R.profit >= 0 ? 'good' : 'bad'));
   k1.appendChild(ckpi('总耗时（级·时）', cfix(R.hours, 4)));
-  k1.appendChild(ckpi('一条龙时利', R.hourly == null ? '—' : cmoney2(R.hourly),
-                      'big ' + (R.hourly != null && R.hourly >= 0 ? 'good' : 'bad')));
+  k1.appendChild(ckpi('一条龙时利（当一栋楼算）',
+                      R.hourly == null ? '—' : cmoney2(R.hourly),
+                      R.hourly != null && R.hourly >= 0 ? 'good' : 'bad'));
+  k1.appendChild(ckpi('实际时利（÷ ' + R.nWork + ' 栋在工作）',
+                      R.avgHourly == null ? '—' : cmoney2(R.avgHourly),
+                      'big ' + (R.avgHourly != null && R.avgHourly >= 0 ? 'good' : 'bad')));
   c1.appendChild(k1);
+
+  var wa = cel('div', 'why');
+  wa.appendChild(cel('b', null, '为什么要再除一次建筑数：'));
+  wa.appendChild(document.createTextNode(
+    ' 「一条龙时利」把所有建筑的等级·小时混在一起除，等于当成一栋楼算。' +
+    '可这条链跨几种建筑，你就得真盖几栋 —— 每栋都要地皮和建造成本。' +
+    '所以把在工作的那几栋的建筑时利平分，才是一栋楼一个等级一小时真正挣到的。' +
+    '没分到产品的建筑不算在里面，它根本没在干活。'));
+  c1.appendChild(wa);
 
   var w1 = cel('div', 'why');
   w1.appendChild(cel('b', null, '「自产」那一列是用来对比的：'));
@@ -2488,7 +2536,8 @@ function renderChain(box) {
   c2.appendChild(cel('h3', null, '建筑'));
   c2.appendChild(cel('div', 'sub',
     '点「选产品」，然后在上面的表里点产品来分配 / 取消，选中的是绿的，点「确认」收工。' +
-    '建筑时利 = 该建筑的耗时占比 × 一条龙时利，几个加起来正好等于总时利。'));
+    '建筑时利 = 该建筑的耗时占比 × 一条龙时利，几个加起来正好等于「一条龙时利」；' +
+    '把在工作的那几个平分，就是上面那个「实际时利」。'));
 
   var rows2 = C.blds.map(function (b, i) {
     var o = R.blds[i];
@@ -2512,7 +2561,9 @@ function renderChain(box) {
       { txt: o.steps.length ? o.steps.join('、') : '（还没选产品）' },
       { txt: cfix(o.hours, 4) },
       { txt: (o.weight * 100).toFixed(1) + '%' },
-      { txt: o.hourly == null ? '—' : cmoney2(o.hourly), cls: 'out' },
+      // 没在工作的建筑不进「实际时利」的平分，所以这里直接说清楚，别显示个 $0.00
+      { txt: !o.working ? '没在工作'
+             : (o.hourly == null ? '—' : cmoney2(o.hourly)), cls: 'out' },
       pick,
       del,
     ];
@@ -2534,7 +2585,8 @@ function renderChain(box) {
     wo.appendChild(cel('b', null, '有 ' + R.orphan + ' 个自产产品还没分到建筑。'));
     wo.appendChild(document.createTextNode(
       ' 它们的耗时算进了总耗时，但不在下面任何一个建筑里 —— ' +
-      '所以上面那几个「建筑时利」加起来会小于总时利。'));
+      '所以上面那几个「建筑时利」加起来会小于一条龙时利，' +
+      '「实际时利」也会跟着偏低。把它们分到建筑里。'));
     c2.appendChild(wo);
   }
   box.appendChild(c2);
