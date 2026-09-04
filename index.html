@@ -162,6 +162,68 @@
   .railon{display:block;flex:1 1 auto;border-left:1px solid var(--line)}
 
   /*
+   * ---- 右边那一栏：回放 .md ----
+   *
+   * 把「筛选并下载」导出来的那个 .md 拖进来，在正文旁边画成一份聊天记录。
+   *
+   * ⚠️ 消息一律【复用 .msg / .av / .head / .body 那几个类】，不另写一套。
+   *    另写一套的话，两边早晚会长得不一样（改了左边忘了右边），
+   *    而这个功能的全部意义就是"和左边看起来是同一个东西"。
+   *    这里只加"外壳"的样式：头、拖放区、自己的滚动条。
+   */
+  #rail{flex-direction:column;min-height:0;min-width:0}
+  /*
+   * ⚠️ 右栏【窄到读不了的时候，就别往里放东西】。
+   *
+   * rail 不设 min-width（那会在断点处反过来把正文挤瘦，见上面那段），
+   * 所以刚过断点时它可能只有十几个像素。空着的时候那是"一条贴边的细线，
+   * 不碍事"；现在里面有头像和消息了，十几个像素就是一坨挤烂的东西。
+   *
+   * 又不能给 rail 加 min-width 把老问题请回来，所以改成：
+   * **要放内容，视口得再宽出 300px 来。**
+   *   正常档 250 + 880 + 300 = 1430
+   *   紧凑档 250 + 440 + 300 =  990
+   * 不够宽就还是那条细线，和加这个功能之前一模一样。
+   */
+  #rphead,#rpfeed{display:none}
+  @media(min-width:1430px){
+    body:not(.compact) #rphead{display:flex}
+    body:not(.compact) #rpfeed{display:block}
+  }
+  @media(min-width:990px){
+    body.compact #rphead{display:flex}
+    body.compact #rpfeed{display:block}
+  }
+  #rphead{flex:0 0 auto;padding:9px 12px;border-bottom:1px solid var(--line);
+    background:var(--panel);display:flex;flex-direction:column;gap:6px}
+  #rphead .rptitle{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+    font-size:12.5px;color:var(--mut)}
+  #rphead .rptitle b{color:var(--tx);font-size:13px}
+  #rphead .rpmeta{font-size:11.5px;color:var(--dim);line-height:1.6;
+    white-space:pre-wrap;word-break:break-word}
+  #rpfeed{flex:1 1 auto;overflow-y:auto;overscroll-behavior:contain;
+    padding:8px 0 40px;min-height:0}
+  /*
+   * 右边这一栏比正文窄不少，两边各留 22px 就太挤了 —— 收到 12。
+   * 头像也小一圈：38 在这个宽度里会把正文挤成一条。
+   */
+  #rpfeed .msg{padding-left:12px;padding-right:12px}
+  #rpfeed .av,#rpfeed .gutter{width:30px;height:30px;flex-basis:30px}
+  #rpfeed .av.ph{font-size:13px}
+  #rpfeed .gutter{height:auto}
+  #rpfeed .daysep{margin-left:12px;margin-right:12px}
+  /* 空着的时候那块拖放区 */
+  #rpdrop{margin:14px 12px;padding:22px 14px;border:1px dashed var(--line);
+    border-radius:10px;text-align:center;color:var(--dim);font-size:12.5px;
+    line-height:1.9}
+  #rpdrop .big{font-size:30px;opacity:.35;margin-bottom:6px}
+  body.rpdrag #rpdrop{border-color:var(--acc);color:var(--acc);
+    background:rgba(125,211,252,.07)}
+  #rpbad{margin:12px;padding:10px 12px;border-radius:8px;font-size:12.5px;
+    line-height:1.8;background:rgba(248,113,113,.10);
+    border:1px solid rgba(248,113,113,.34);color:var(--tx)}
+
+  /*
    * ⚠️ 断点必须 = 侧栏 250 + 那一档的正文宽度，**两档各算各的**。
    *
    * 这条规矩是量出来的。第一版我给 #rail 写了 min-width:260px、
@@ -177,7 +239,7 @@
   /* 正常档：250 + 880 = 1130 → 1140 */
   @media(min-width:1140px){
     body:not(.compact) #col{max-width:var(--colmax)}
-    body:not(.compact) #rail{display:block;flex:1 1 auto;
+    body:not(.compact) #rail{display:flex;flex:1 1 auto;
       border-left:1px solid var(--line)}
   }
   /*
@@ -187,7 +249,7 @@
    */
   @media(min-width:761px){
     body.compact #col{max-width:var(--colmax-compact)}
-    body.compact #rail{display:block;flex:1 1 auto;
+    body.compact #rail{display:flex;flex:1 1 auto;
       border-left:1px solid var(--line)}
     /* 列窄了，两边的留白也跟着收一点 —— 440 里省下的 16px 全给正文 */
     body.compact .msg{padding-left:14px;padding-right:14px}
@@ -1156,7 +1218,10 @@
         <div class="placeholder"><div class="big">💬</div><div>正在载入…</div></div>
       </div>
     </div>
-    <aside id="rail" aria-hidden="true"></aside>
+    <aside id="rail">
+      <div id="rphead"></div>
+      <div id="rpfeed"></div>
+    </aside>
   </div>
 </div>
 
@@ -1225,7 +1290,7 @@ var DATA = './data';
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = '39c91fbb0a7a';
+var PAGE_BUILD = '44b41ffd7bd9';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -7305,6 +7370,313 @@ function expDownload() {
 
 /*
  * ============================================================================
+ * ==================== 回放：把下载的 .md 画回聊天记录 ========================
+ * ============================================================================
+ *
+ * 右边那一栏（#rail）原来是空着占地方的，现在派上用场：
+ * 把「筛选并下载」导出来的 .md 拖进去，在正文旁边画成一份聊天记录，
+ * 和左边【长得一模一样】——同一套 .msg / .av / .head 类，同一个 renderBody。
+ *
+ * 几条定死的：
+ *
+ * ① **只认这个页面自己导出的那个格式。** 认不出来就明说"这不像本页导出的"，
+ *    绝不画一个空面板让人猜是文件的问题还是功能坏了。
+ *
+ * ② **文件是不可信文本。** 它可能是别人给的，也可能被改过。
+ *    一律走 renderBody（textContent / createTextNode，链接只认 http(s)），
+ *    一个 innerHTML 都没有 —— 和鸥子台词是同一条规矩。
+ *
+ * ③ **头像去左边的聊天记录里按 id 查。** 文件里没有头像（也不该有），
+ *    但同一个人多半就在已载入的消息里。查不到就用首字母占位块，
+ *    不去网上抓 —— 那会变成"打开一个本地文件却发出了几十个请求"。
+ *
+ * ④ **屏蔽照样生效。** 文件里存的是真名，可屏幕上左边那个人正显示成「玩家3」，
+ *    右边却写着真名的话，屏蔽等于白做 —— 而这是【录完视频才会发现】的事故。
+ *
+ * ⑤ 证书 / 赞助 / 管理 / R1R2 这些标签**不画**。文件里本来就没有，
+ *    硬要从左边查出来补上，就等于让"回放"显示出文件里没有的东西。
+ */
+var RP = null;               // { name, meta:[], msgs:[…] }；null = 还没放文件
+var RP_ERR = '';             // 认不出来时说的那句话
+
+/** 已载入的消息里，这个 id 的头像和名字长什么样。找不到返回 null。 */
+function rpLook(sid) {
+  if (!sid) return null;
+  var hit = null;
+  ALL.forEach(function (m) {
+    if (m.sid !== sid) return;
+    // 取最新那一条：名字和头像都可能换过，以最近的为准
+    if (!hit || m.t > hit.t) hit = m;
+  });
+  return hit;
+}
+
+/**
+ * 解析「筛选并下载」导出的那个 .md。
+ *
+ * 认的就是 expMd 写出来的那几种行，别的一律跳过：
+ *   `## 2026-08-19`              → 换一天
+ *   `**02:00**　公司名(#111)`     → 新的一条
+ *   `> 正文`                      → 接在上一条的正文后面
+ *   `- 房间：…`                   → 表头那几行，原样收着显示
+ *
+ * ⚠️ 时间只有 HH:MM，日期靠上面那个 `## ` 带 —— 所以【顺序有意义】：
+ *    没遇到过 `## ` 就先出现的消息认不出日期，只能丢掉。
+ *    真丢了会在返回值里报出来，不闷声吞掉。
+ */
+function rpParse(text) {
+  var lines = String(text || '').split(/\r?\n/);
+  var msgs = [], meta = [], day = '', cur = null, noDay = 0;
+  var reDay = /^##\s+(\d{4}-\d{2}-\d{2})\s*$/;
+  var reWho = /^\*\*(\d{1,2}:\d{2})\*\*[\s\u3000]*(.+?)\s*$/;
+  var reSid = /^(.+?)\s*\(#(\d+)\)$/;
+
+  function close() {
+    if (!cur) return;
+    // 正文两头的空行去掉：`> ` 那一段前后常常各带一个空的
+    cur.body = cur.body.join('\n').replace(/^\n+|\n+$/g, '');
+    msgs.push(cur);
+    cur = null;
+  }
+
+  lines.forEach(function (raw) {
+    var line = String(raw || '');
+    var mDay = reDay.exec(line);
+    if (mDay) { close(); day = mDay[1]; return; }
+
+    if (line.charAt(0) === '>') {
+      // `> 正文` 和光秃秃一个 `>`（正文里的空行）都要认
+      if (cur) cur.body.push(line.replace(/^>\s?/, ''));
+      return;
+    }
+
+    var mWho = reWho.exec(line);
+    if (mWho) {
+      close();
+      if (!day) { noDay++; return; }
+      var who = mWho[2], name = who, sid = 0;
+      var mSid = reSid.exec(who);
+      if (mSid) { name = mSid[1]; sid = Number(mSid[2]) || 0; }
+      var hm = mWho[1].split(':');
+      var d = day.split('-');
+      /*
+       * ⚠️ 按【本地时间】拼，因为文件里那个时间就是 hmOf() 写的本地时间。
+       *    用 Date.parse(day+'T'+hm+'Z') 的话，导出和回放差一个时区 ——
+       *    而这只在时区不是 UTC 的机器上才看得出来。
+       */
+      var t = new Date(Number(d[0]), Number(d[1]) - 1, Number(d[2]),
+                       Number(hm[0]), Number(hm[1]), 0, 0).getTime();
+      cur = { day: day, t: t, name: name, sid: sid, body: [] };
+      return;
+    }
+
+    if (line.indexOf('- ') === 0) { meta.push(line.slice(2)); return; }
+  });
+  close();
+  return { meta: meta, msgs: msgs, noDay: noDay };
+}
+
+/** 把文本装进右边那一栏。认不出来就把原因摆出来。 */
+function rpLoad(text, fileName) {
+  var r;
+  try { r = rpParse(text); }
+  catch (e) { RP = null; RP_ERR = '这个文件读不动：' + (e && e.message); rpRender(); return; }
+  if (!r.msgs.length) {
+    RP = null;
+    RP_ERR = '这个文件里一条消息都没认出来。\n' +
+             '回放认的是本页「筛选并下载」导出的那种 .md —— ' +
+             '每条长这样：先一行 `## 日期`，再一行 `**时间**　公司名(#id)`，' +
+             '然后是 `> 正文`。' +
+             (r.noDay ? '\n（有 ' + r.noDay + ' 条前面没有 `## 日期`，认不出是哪天。）' : '');
+    rpRender();
+    return;
+  }
+  RP_ERR = '';
+  RP = { name: String(fileName || '（没有文件名）'), meta: r.meta,
+         msgs: r.msgs, noDay: r.noDay };
+  rpRender();
+}
+function rpClose() { RP = null; RP_ERR = ''; rpRender(); }
+
+/** 读一个 File 进来。**只读本地文件，不发任何请求。** */
+function rpFile(f) {
+  if (!f) return;
+  if (f.size > 8 * 1024 * 1024) {
+    RP = null;
+    RP_ERR = '这个文件有 ' + Math.round(f.size / 1048576) + ' MB，太大了（上限 8 MB）。\n' +
+             '导出的 .md 一万条也就一两 MB —— 这么大多半不是那个文件。';
+    rpRender();
+    return;
+  }
+  try {
+    var fr = new FileReader();
+    fr.onload = function () { rpLoad(String(fr.result || ''), f.name); };
+    fr.onerror = function () { RP = null; RP_ERR = '这个文件读不出来。'; rpRender(); };
+    fr.readAsText(f, 'utf-8');
+  } catch (e) {
+    RP = null; RP_ERR = '这个浏览器读不了本地文件：' + (e && e.message); rpRender();
+  }
+}
+
+/** 画右边那一栏。 */
+function rpRender() {
+  var head = $('#rphead'), feed = $('#rpfeed');
+  if (!head || !feed) return;
+  clear(head); clear(feed);
+
+  var t1 = el('div', 'rptitle');
+  t1.appendChild(el('b', null, '回放'));
+  var pick = el('button', 'btn', RP ? '换一个 .md' : '打开 .md…');
+  pick.onclick = function () { rpPick(); };
+  t1.appendChild(pick);
+  if (RP) {
+    var cls = el('button', 'btn', '关掉');
+    cls.onclick = function () { rpClose(); };
+    t1.appendChild(cls);
+  }
+  head.appendChild(t1);
+
+  if (RP) {
+    var mt = el('div', 'rpmeta');
+    var lines = [RP.name, RP.msgs.length + ' 条'];
+    // 表头那几行原样带上 —— 房间、时间范围、是不是假 id，都在里面
+    RP.meta.forEach(function (x) { lines.push(x); });
+    if (RP.noDay) lines.push('⚠️ 有 ' + RP.noDay + ' 条前面没有日期，没画出来');
+    mt.textContent = lines.join('\n');
+    head.appendChild(mt);
+  } else {
+    head.appendChild(el('div', 'rpmeta',
+      '把「筛选并下载」导出来的 .md 拖进来，在这儿画成聊天记录。'));
+  }
+
+  if (RP_ERR) {
+    var bad = el('div', null, '');
+    bad.id = 'rpbad';
+    bad.textContent = RP_ERR;
+    feed.appendChild(bad);
+  }
+  if (!RP) {
+    var dz = el('div', null, '');
+    dz.id = 'rpdrop';
+    dz.appendChild(el('div', 'big', '📄'));
+    dz.appendChild(el('div', null, '把 .md 拖到这里'));
+    dz.appendChild(el('div', null, '或者点上面那个「打开 .md…」'));
+    feed.appendChild(dz);
+    return;
+  }
+
+  /*
+   * 画法和左边那条消息流【一模一样】：日期分隔条、同一个人连着说话就并成一组、
+   * 正文走 renderBody。区别只有两处：
+   *   · 没有证书 / 赞助 / 管理 / R1R2 那些标签（文件里就没有，不该凭空补）
+   *   · 名字不可点（这边没有资料页可开）
+   */
+  var lastDay = '', lastSid = null, lastT = 0;
+  RP.msgs.forEach(function (m, i) {
+    var first = false;
+    if (m.day !== lastDay) {
+      var sep = el('div', 'daysep');
+      sep.appendChild(el('span', null, dayLabel(m.day)));
+      feed.appendChild(sep);
+      lastDay = m.day; lastSid = null; first = true;
+    }
+    var grouped = (m.sid && m.sid === lastSid && m.t - lastT < 300000 && !first);
+    lastSid = m.sid; lastT = m.t;
+
+    var row = el('div', 'msg' + (grouped ? '' : ' first'));
+    /*
+     * 头像去左边的聊天记录里按 id 查。查不到（那个人的消息还没载进来、
+     * 或者文件用的是假 id）就用首字母占位块 —— 不去网上抓。
+     */
+    var seen = rpLook(m.sid);
+    var fake = { name: m.name, sid: m.sid, logo: (seen && seen.logo) || '' };
+    if (grouped) row.appendChild(el('div', 'gutter', hmOf(m.t)));
+    else row.appendChild(avatar(fake));
+
+    var content = el('div', 'content');
+    if (!grouped) {
+      var h = el('div', 'head');
+      /*
+       * ⚠️ 屏蔽照样生效。文件里存的是真名，可左边那个人正显示成「玩家3」——
+       *    右边写真名的话屏蔽等于白做，而这是录完视频才会发现的事故。
+       */
+      var shown = (m.sid && MASK_IX[m.sid]) ? ('玩家' + MASK_IX[m.sid]) : m.name;
+      var who = el('span', 'who', shown);
+      who.style.color = colorOf(m.sid);
+      who.style.cursor = 'default';
+      h.appendChild(who);
+      var ts = el('span', 'ts', hmOf(m.t));
+      h.appendChild(ts);
+      content.appendChild(h);
+    }
+    var body = el('div', 'body');
+    renderBody(body, m.body, '', true);      // 最后那个 true = 正文里的 @ 也按屏蔽换
+    content.appendChild(body);
+    row.appendChild(content);
+    feed.appendChild(row);                   // 【最后】才挂上去，和左边那条流一样
+  });
+  RP_SIG = rpSig();
+}
+
+/*
+ * 右栏依赖两样【外面的】东西：屏蔽名单（名字要不要遮）和已载入的消息（头像去哪查）。
+ * 这两样一变就得重画，可 refresh() 一轮跑好几次 ——
+ * 一份几千条的 .md 每次都重建一遍会明显发涩。所以按指纹判断。
+ */
+function rpSig() {
+  return MASK.length + '|' + ALL.size + '|' + (RP ? RP.msgs.length : 0) +
+         '|' + (RP_ERR ? 1 : 0);
+}
+var RP_SIG = '';
+function rpMaybeRender() {
+  if (rpSig() === RP_SIG) return;
+  rpRender();
+}
+
+/** 弹一个选文件的框。 */
+function rpPick() {
+  try {
+    var inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = '.md,.markdown,.txt,text/markdown,text/plain';
+    inp.onchange = function () {
+      var f = inp.files && inp.files[0];
+      if (f) rpFile(f);
+    };
+    inp.click();
+  } catch (e) { RP_ERR = '打不开选文件的框：' + (e && e.message); rpRender(); }
+}
+
+/**
+ * 拖放。挂在【整个右栏】上，不是只挂那个虚线框 ——
+ * 已经放过一个文件之后虚线框就没了，那时候还得能换一个。
+ */
+function rpDrop() {
+  var rail = $('#rail');
+  if (!rail || !rail.addEventListener) return;
+  var stop = function (ev) {
+    if (ev && ev.preventDefault) ev.preventDefault();
+    if (ev && ev.stopPropagation) ev.stopPropagation();
+  };
+  rail.addEventListener('dragover', function (ev) {
+    stop(ev);
+    try { document.body.classList.add('rpdrag'); } catch (e) {}
+  });
+  rail.addEventListener('dragleave', function (ev) {
+    stop(ev);
+    try { document.body.classList.remove('rpdrag'); } catch (e) {}
+  });
+  rail.addEventListener('drop', function (ev) {
+    stop(ev);
+    try { document.body.classList.remove('rpdrag'); } catch (e) {}
+    var dt = ev && ev.dataTransfer;
+    var f = dt && dt.files && dt.files[0];
+    if (f) rpFile(f);
+  });
+}
+
+/*
+ * ============================================================================
  * ================================ 鸥子 ======================================
  * ============================================================================
  *
@@ -8549,6 +8921,8 @@ function renderSidebar() {
 function refresh(bottom) {
   applyFilters(); renderSidebar(); renderFeed(); renderFiles(); renderDeep();
   renderAiCard();
+  // 右栏那份回放：屏蔽名单或已载入的消息变了才重画（头像和名字要跟着变）
+  rpMaybeRender();
   var p = [roomLabel(sel.room)];
   if (sel.day) p.push(sel.day);
   if (sel.sender != null) {
@@ -8678,6 +9052,8 @@ $('#nq').oninput = renderNews;
 $('#b_mask').onclick = function () { mkOpen(); };
 $('#b_pick').onclick = function () { hidePick(!HIDE_PICK); };
 $('#b_exp').onclick = function () { expMode(!EXP_ON); };
+rpRender();
+rpDrop();
 /*
  * 松手【在哪儿都算数】。
  * 只挂在消息行上的话，拖出消息流之外再松手，EXP_DRAG 就一直挂着 ——
