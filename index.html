@@ -1225,7 +1225,7 @@ var DATA = './data';
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = 'cb55848e9050';
+var PAGE_BUILD = '39c91fbb0a7a';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -7062,13 +7062,13 @@ function expToggle(id) {
   id = Number(id) || 0;
   if (!id) return;
   expSet(id, !EXP[id]);
-  refresh();
+  expTouch();
 }
-function expClear() { EXP = {}; EXP_N = 0; EXP_SEG_A = 0; refresh(); }
+function expClear() { EXP = {}; EXP_N = 0; EXP_SEG_A = 0; expTouch(); }
 /** 把现在筛出来的全选上（房间/日期/搜索/只看某人 筛完剩下的那些）。 */
 function expAllShown() {
   view.forEach(function (m) { expSet(m.id, true); });
-  refresh();
+  expTouch();
 }
 
 /*
@@ -7086,9 +7086,30 @@ function expPaint() {
   for (var i = 0; i < EXP_ROWS.length; i++) {
     var r = EXP_ROWS[i], mm = view[i];
     if (!r || !mm) continue;
-    try { r.classList.toggle('exp', !!EXP[mm.id]); } catch (e) {}
+    try {
+      r.classList.toggle('exp', !!EXP[mm.id]);
+      r.classList.toggle('seg', !!(EXP_SEG && EXP_SEG_A === mm.id));
+    } catch (e) {}
   }
   if (EXP_CNT) { try { EXP_CNT.textContent = '已选 ' + EXP_N + ' 条'; } catch (e) {} }
+}
+
+/**
+ * 选中集变了：**只重画那条横条和那几个记号，绝不重建消息流。**
+ *
+ * ⚠️ 这不是"优化"，是这个功能能不能用的问题。
+ *    选消息是要连着点几十下的，而往上展开之后消息流可能有上千行 ——
+ *    每点一下重建一次（每行还要跑一遍 renderBody、画头像），
+ *    点一下卡一下，选到一半人就放弃了。
+ *    行还是原来那些行，变的只是几个 class 和条上那个数字。
+ *
+ * 侧栏要重画，是因为条上的「下载 / 清空」按钮得跟着"有没有选中"出现和消失。
+ * 顺序不能反：renderSidebar 会把条整个重建（EXP_CNT 换成新节点），
+ * 所以 expPaint 必须在它【之后】跑。
+ */
+function expTouch() {
+  renderSidebar();
+  expPaint();
 }
 /** 按下：那一条当场翻面，方向由它决定。 */
 function expDragStart(ix) {
@@ -7116,7 +7137,7 @@ function expDragTo(ix) {
 function expDragEnd() {
   if (!EXP_DRAG) return;
   EXP_DRAG = null;
-  refresh();
+  expTouch();
 }
 
 /*
@@ -7133,12 +7154,12 @@ function expDragEnd() {
 function expSegMode(on) {
   EXP_SEG = !!on;
   EXP_SEG_A = 0;                       // 换模式时把没走完的那半段丢掉
-  refresh();
+  expTouch();
 }
 function expSegClick(id) {
   id = Number(id) || 0;
   if (!id) return;
-  if (!EXP_SEG_A) { EXP_SEG_A = id; expSet(id, true); refresh(); return; }
+  if (!EXP_SEG_A) { EXP_SEG_A = id; expSet(id, true); expTouch(); return; }
   /*
    * ⚠️ 端点在【当前画面上的顺序】里找，不是全部消息的顺序。
    *    按全量算的话，中间那些被筛掉、你根本看不见的消息也会被卷进来 ——
@@ -7150,11 +7171,11 @@ function expSegClick(id) {
     if (view[i].id === id) b = i;
   }
   // 起点被筛掉了（换了搜索词之类）：把这一下当成新的起点，别报错也别乱选
-  if (a < 0 || b < 0) { EXP_SEG_A = id; expSet(id, true); refresh(); return; }
+  if (a < 0 || b < 0) { EXP_SEG_A = id; expSet(id, true); expTouch(); return; }
   if (a > b) { var t = a; a = b; b = t; }
   for (i = a; i <= b; i++) expSet(view[i].id, true);
   EXP_SEG_A = 0;
-  refresh();
+  expTouch();
 }
 /** 选中的那些，按时间排好。 */
 function expList() {
@@ -7977,8 +7998,37 @@ function gullBoot() {
   if (GULL.on) { gullLoad(); gullImgLoad(); gullTimer(); }
 }
 
+/*
+ * 当前这套筛选条件的指纹。**只认"筛的是什么"，不认"筛出来几条"。**
+ *
+ * 用来判断 limit（往上展开了多少条）该不该归位 —— 见 applyFilters。
+ * 藏消息 / 选消息 / 新数据进来都不算换筛选：view 会变，但你还在读同一段。
+ */
+function filterSig_() {
+  return [sel.room, sel.day || '', sel.sender == null ? '' : sel.sender,
+          sel.realm == null ? '' : sel.realm, sel.dimOthers ? 1 : 0,
+          sel.q].join('\u0001');
+}
+var FILTER_SIG = null;
+
 function applyFilters() {
   if (DIRTY) rebuild();
+  /*
+   * ⚠️⚠️ limit 只在【筛选条件真的换了】的时候才归位到 400。
+   *
+   * 原来这个函数结尾无条件写 `limit = 400`。以前没事，是因为 refresh()
+   * 只在换筛选、来新数据时才跑。**导出功能一来就炸了**：
+   * 选一条消息 → refresh() → limit 被打回 400 →
+   * 刚才「载入更早的 400 条」点开的那些【当场消失】，只剩最后 400 条。
+   *
+   * 于是想选 400 条之前的东西，就变成"往上滚、展开、点一条、又被收回去、
+   * 再往上滚"——**选一条要重来一遍**。
+   *
+   * 归位本身是需要的（换到一个大房间时别一次画二十万行），
+   * 但它该跟着"换筛选"走，不该跟着"重画一次"走。
+   */
+  var sig = filterSig_();
+  if (sig !== FILTER_SIG) { FILTER_SIG = sig; limit = 400; }
   var q = sel.q.toLowerCase();
 
   // 房间永远是选中的，所以底子就是那个房间的桶（已排好序）。
@@ -7987,7 +8037,6 @@ function applyFilters() {
   if (!q && !sel.day && sel.sender == null && !realmHides()) {
     // ⚠️ 快路径也得把"暂时不显示"那几条摘掉，不然它只在有别的筛选条件时才生效
     view = (HIDE_N && !HIDE_PICK) ? base.filter(function (m) { return !HIDE[m.id]; }) : base;
-    limit = 400;
     return;
   }
 
@@ -8031,7 +8080,6 @@ function applyFilters() {
     // 并进来之后顺序就乱了，重排一次。深搜结果最多几千条，这一步毫秒级。
     if (merged) view.sort(function (a, b) { return a.t - b.t || a.id - b.id; });
   }
-  limit = 400;
 }
 
 function renderFeed() {
