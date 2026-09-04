@@ -771,21 +771,35 @@
    * 「筛选并下载」。颜色【故意和挑选模式不一样】（蓝 vs 绿）——
    * 两个模式都是"点消息"，长得一样的话，你会以为自己在藏消息，
    * 其实在选导出（或者反过来），而两边看着都正常。
+   *
+   * ⚠️ 整行就是按钮，**没有单独的"选中"小按钮**。
+   *    第一版每行挂两个按钮，结果是：要选一片得一条条点过去，
+   *    而按钮只有 hover 才显形 —— 等于每选一条都要先找一下那个按钮。
+   *    现在按住拖过去就是一片。
    */
-  .msg .expbtn{position:absolute;top:4px;z-index:2;
-    padding:2px 8px;font-size:11px;border-radius:6px;cursor:pointer;
-    background:var(--panel2);color:var(--mut);border:1px solid var(--line);
-    font-family:inherit;opacity:0;transition:opacity .12s;white-space:nowrap}
-  .msg .expbtn.b1{right:6px}
-  .msg .expbtn.b2{right:76px}
-  body.exporting .msg{position:relative}
-  body.exporting .msg:hover .expbtn,body.exporting .msg.exp .expbtn{opacity:1}
-  /* 手机上没有 hover，一律显出来 */
-  @media(hover:none){ body.exporting .msg .expbtn{opacity:1} }
-  .msg .expbtn:hover{border-color:var(--acc);color:var(--acc)}
-  body.exporting .msg.exp{background:rgba(125,211,252,.10);
+  body.exporting .msg{position:relative;cursor:pointer;user-select:none;
+    -webkit-user-select:none}
+  body.exporting .msg:hover{background:rgba(125,211,252,.05)}
+  /*
+   * ⚠️ 正文那一块整个【不吃鼠标事件】。
+   *    不关的话，点在名字上会打开资料页、点在链接上会开新标签页 ——
+   *    而你只想选这一条。和挑选模式下关掉输入框是同一个道理：
+   *    落进子元素的那一下，从外面看就是"点了没反应"。
+   */
+  body.exporting .msg .content{pointer-events:none}
+  /*
+   * 勾选记号用 ::after 画，**不是 JS 塞一个节点**。
+   * 拖选时一秒要刷几十次 class，每次都去建/删节点的话会明显发涩；
+   * 纯 CSS 的话，class 一变它自己就跟着变，零开销。
+   */
+  body.exporting .msg::after{content:'○';position:absolute;right:12px;top:6px;
+    font-size:13px;color:var(--dim);pointer-events:none;z-index:2}
+  body.exporting .msg.exp{background:rgba(125,211,252,.11);
     box-shadow:inset 3px 0 0 var(--acc)}
-  body.exporting .msg.exp .expbtn.b1{border-color:var(--acc);color:var(--acc);opacity:1}
+  body.exporting .msg.exp::after{content:'✓';color:var(--acc)}
+  /* 段选的起点：橙色，和"已选"分得开 —— 它是"等第二下"的状态，不是结果 */
+  body.exporting .msg.seg{box-shadow:inset 3px 0 0 var(--warn)}
+  body.exporting .msg.seg::after{content:'起';color:var(--warn);font-size:11px}
   #expbar{display:none;align-items:center;gap:10px;flex-wrap:wrap;
     padding:7px 16px;background:rgba(125,211,252,.10);
     border-bottom:1px solid var(--line);font-size:12.5px;color:var(--tx);flex:0 0 auto}
@@ -1211,7 +1225,7 @@ var DATA = './data';
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = '77aeef86ec36';
+var PAGE_BUILD = 'cb55848e9050';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -7023,50 +7037,123 @@ function hidePick(on) {
 var EXP_ON = false;          // 不存偏好：和挑选模式一样，是临时状态
 var EXP = {};                // 消息id -> 1
 var EXP_N = 0;
-var EXP_ANCHOR = 0;          // 上一次点的那条，框选时当起点
-var EXP_REAL = false;        // 用真名导出（只有屏蔽着人的时候才有意义）
+/*
+ * 用假 id。**默认关着，也就是默认导出真实 id。**
+ * 只有屏蔽了人的时候这个开关才有意义（也才会出现在条上）。
+ */
+var EXP_FAKE = false;
+var EXP_SEG = false;         // 段选模式：点起点 → 点终点
+var EXP_SEG_A = 0;           // 段选的起点（消息 id）；0 = 还没点起点
+var EXP_DRAG = null;         // 正在拖选：{ a: 视图下标, add: 选还是取消, base: 按下时的快照 }
+var EXP_ROWS = [];           // 视图下标 -> 那一行的 DOM。拖选时直接改 class 用
+var EXP_CNT = null;          // 条上那个"已选 N 条"，拖选时直接改文字
 
 function expMode(on) {
   EXP_ON = !!on;
+  if (!EXP_ON) { EXP_SEG = false; EXP_SEG_A = 0; EXP_DRAG = null; }
   try { document.body.classList.toggle('exporting', EXP_ON); } catch (e) {}
   refresh();
+}
+function expSet(id, on) {
+  if (on) { if (!EXP[id]) { EXP[id] = 1; EXP_N++; } }
+  else if (EXP[id]) { delete EXP[id]; EXP_N--; }
 }
 function expToggle(id) {
   id = Number(id) || 0;
   if (!id) return;
-  if (EXP[id]) { delete EXP[id]; EXP_N--; }
-  else { EXP[id] = 1; EXP_N++; EXP_ANCHOR = id; }
+  expSet(id, !EXP[id]);
   refresh();
 }
-/**
- * 从上一次点的那条，一直选到这一条。
- *
- * ⚠️ 用的是【当前画面上的顺序】，不是全部消息的顺序。
- *    先筛选、再框选，选到的就只有筛出来的那些 —— 这正是"筛选并下载"的用法。
- *    按全量算的话，"从这条到那条"会把中间那些被筛掉的也一起卷进来，
- *    而你在画面上根本看不见它们 —— 于是文件里凭空多出几百条，
- *    你还以为是自己点错了。
- */
-function expRange(id) {
-  id = Number(id) || 0;
-  var a = -1, b = -1, i;
-  for (i = 0; i < view.length; i++) {
-    if (view[i].id === EXP_ANCHOR) a = i;
-    if (view[i].id === id) b = i;
-  }
-  if (a < 0 || b < 0) { expToggle(id); return; }   // 起点被筛掉了，退化成点一条
-  if (a > b) { var t = a; a = b; b = t; }
-  for (i = a; i <= b; i++) {
-    if (!EXP[view[i].id]) { EXP[view[i].id] = 1; EXP_N++; }
-  }
-  EXP_ANCHOR = id;
-  refresh();
-}
-function expClear() { EXP = {}; EXP_N = 0; EXP_ANCHOR = 0; refresh(); }
+function expClear() { EXP = {}; EXP_N = 0; EXP_SEG_A = 0; refresh(); }
 /** 把现在筛出来的全选上（房间/日期/搜索/只看某人 筛完剩下的那些）。 */
 function expAllShown() {
-  view.forEach(function (m) { if (!EXP[m.id]) { EXP[m.id] = 1; EXP_N++; } });
-  if (view.length) EXP_ANCHOR = view[view.length - 1].id;
+  view.forEach(function (m) { expSet(m.id, true); });
+  refresh();
+}
+
+/*
+ * ---- 拖选 ----
+ *
+ * 按住左键、拖过几条，松手。按下那一条决定方向：
+ * 按在【没选中】的上面就是一路选过去，按在【已选中】的上面就是一路取消。
+ *
+ * ⚠️ 拖动过程中**不 refresh()**，只改那几行的 class。
+ *    refresh() 会 clear(feed) 把整条消息流重建一遍 —— 而你的鼠标正按在
+ *    其中一个节点上。节点被删掉，后面的 mouseenter 就再也不来了，
+ *    表现是【拖到一半就不动了】，而且看不出为什么。
+ */
+function expPaint() {
+  for (var i = 0; i < EXP_ROWS.length; i++) {
+    var r = EXP_ROWS[i], mm = view[i];
+    if (!r || !mm) continue;
+    try { r.classList.toggle('exp', !!EXP[mm.id]); } catch (e) {}
+  }
+  if (EXP_CNT) { try { EXP_CNT.textContent = '已选 ' + EXP_N + ' 条'; } catch (e) {} }
+}
+/** 按下：那一条当场翻面，方向由它决定。 */
+function expDragStart(ix) {
+  var m = view[ix];
+  if (!m) return;
+  EXP_DRAG = { a: ix, add: !EXP[m.id], base: {} };
+  for (var k in EXP) if (EXP[k]) EXP_DRAG.base[k] = 1;
+  expDragTo(ix);
+}
+/** 拖到第 ix 条：按下那条到这条整段按方向刷一遍，范围外的还原。 */
+function expDragTo(ix) {
+  if (!EXP_DRAG || !view[ix]) return;
+  /*
+   * ⚠️ 每次都从【按下时那份快照】重算，不是在当前状态上接着涂。
+   *    接着涂的话，拖过头了往回收，刚才涂过的那些不会还原 ——
+   *    表现是"往回拖收不回来"，只能松手重来。
+   */
+  EXP = {}; EXP_N = 0;
+  for (var k in EXP_DRAG.base) { EXP[k] = 1; EXP_N++; }
+  var a = Math.min(EXP_DRAG.a, ix), b = Math.max(EXP_DRAG.a, ix);
+  for (var i = a; i <= b; i++) expSet(view[i].id, EXP_DRAG.add);
+  expPaint();
+}
+/** 松手。这时候才真的重画一次（条上的按钮、侧栏那几个数要跟上）。 */
+function expDragEnd() {
+  if (!EXP_DRAG) return;
+  EXP_DRAG = null;
+  refresh();
+}
+
+/*
+ * ---- 段选 ----
+ *
+ * 点起点 → 点终点，中间整段选上，然后回到"等下一个起点"。
+ * 和拖选做的是同一件事，区别是**不用按着拖**，手机上也能用。
+ *
+ * 三条是他明说的：
+ *   · 可退出 —— 关掉就回到单选，已经选好的一条不动
+ *   · 仅选择 —— 段选【永远不取消】，点到已经选中的那条也只是当端点
+ *   · 不影响前后 —— 开关它不碰 EXP，之前之后照样能单选 / 取消单条
+ */
+function expSegMode(on) {
+  EXP_SEG = !!on;
+  EXP_SEG_A = 0;                       // 换模式时把没走完的那半段丢掉
+  refresh();
+}
+function expSegClick(id) {
+  id = Number(id) || 0;
+  if (!id) return;
+  if (!EXP_SEG_A) { EXP_SEG_A = id; expSet(id, true); refresh(); return; }
+  /*
+   * ⚠️ 端点在【当前画面上的顺序】里找，不是全部消息的顺序。
+   *    按全量算的话，中间那些被筛掉、你根本看不见的消息也会被卷进来 ——
+   *    文件里凭空多出几百条，而你以为是自己点错了。
+   */
+  var a = -1, b = -1, i;
+  for (i = 0; i < view.length; i++) {
+    if (view[i].id === EXP_SEG_A) a = i;
+    if (view[i].id === id) b = i;
+  }
+  // 起点被筛掉了（换了搜索词之类）：把这一下当成新的起点，别报错也别乱选
+  if (a < 0 || b < 0) { EXP_SEG_A = id; expSet(id, true); refresh(); return; }
+  if (a > b) { var t = a; a = b; b = t; }
+  for (i = a; i <= b; i++) expSet(view[i].id, true);
+  EXP_SEG_A = 0;
   refresh();
 }
 /** 选中的那些，按时间排好。 */
@@ -7077,10 +7164,16 @@ function expList() {
   return out;
 }
 
-/** 一个人写成什么样。屏蔽优先（除非勾了"用真名"）。 */
+/**
+ * 一个人写成什么样。
+ *
+ * **默认是真实 id**（公司名 + 数字 id）。只有勾了「用假 id」时，
+ * 被屏蔽的那几个人才写成「玩家N」—— 没被屏蔽的人不受影响，
+ * 那个开关管的只是"屏蔽名单上的人要不要一起遮"。
+ */
 function expWho(m) {
   var n = MASK_IX[m.sid];
-  if (n && !EXP_REAL) return '玩家' + n;
+  if (n && EXP_FAKE) return '玩家' + n;
   return String(m.name || '(未知)') + '(#' + (Number(m.sid) || 0) + ')';
 }
 
@@ -7093,7 +7186,7 @@ function expWho(m) {
  */
 function expBody(m) {
   var s = String(m.body || '');
-  if (!EXP_REAL && MASK_RE) {
+  if (EXP_FAKE && MASK_RE) {
     MASK_RE.lastIndex = 0;
     s = s.replace(MASK_RE, function (h) { return maskAtText(h); });
   }
@@ -7131,8 +7224,9 @@ function expMd() {
    *    说清楚"有哪三样"就够了，没有的东西不需要点名。
    */
   L.push('- 本文件只含【日期时间、玩家、正文】三样，别的字段都没有导出。');
-  if (!EXP_REAL && MASK.length) {
-    L.push('- 其中 ' + MASK.length + ' 人按「玩家N」匿名，正文里 @ 到他们的地方一起换过了。');
+  if (EXP_FAKE && MASK.length) {
+    L.push('- 其中 ' + MASK.length + ' 人用的是假 id（写成「玩家N」），' +
+           '正文里 @ 到他们的地方一起换过了。');
   }
   L.push('');
   var day = '';
@@ -7942,6 +8036,19 @@ function applyFilters() {
 
 function renderFeed() {
   var feed = $('#feed');
+  /*
+   * ⚠️ 先把滚动位置记下来，画完再放回去。
+   *
+   * clear(feed) 会把所有子节点删掉 —— 这一瞬间 scrollHeight 塌成 0，
+   * 浏览器顺手把 scrollTop 夹到 0。等内容重新画上去，人已经被扔到最上面了。
+   * 表现就是【每点一下消息，画面就跳走一次】—— 而选消息恰恰是要连着点很多下的。
+   *
+   * refresh(true) 那条路（换筛选、载入新数据）还是照旧滚到底：
+   * 它是在这个函数之后才设 scrollTop 的，会盖掉这里放回去的值。
+   */
+  var keepTop = 0;
+  try { keepTop = feed.scrollTop || 0; } catch (e) {}
+  EXP_ROWS = [];
   clear(feed);
   if (!ALL.size) return;
   if (!view.length) {
@@ -7984,6 +8091,7 @@ function renderFeed() {
                         ((m.retracted || m.deleted) ? ' gone' : '') +
                         ((markSet && markSet.has(m.id)) ? ' picked' : '') +
                         (EXP[m.id] ? ' exp' : '') +
+                        ((EXP_SEG && EXP_SEG_A === m.id) ? ' seg' : '') +
                         (isHid ? ' hid' : '') +
                         ((dimOn && m._r !== sel.realm) ? ' dim' : ''));
     /*
@@ -7999,25 +8107,24 @@ function renderFeed() {
         row.appendChild(hb);
       })(m);
     }
-    /* 导出模式的两个按钮，同样【只在这个模式下才建】，理由见上面那段。 */
+    /*
+     * 导出模式：整行就是按钮，事件【只在这个模式下才挂】——
+     * 平时二十万条各挂三个闭包是白扔的内存，理由和上面那段一样。
+     */
     if (EXP_ON) {
-      (function (mm) {
-        var b1 = el('button', 'expbtn b1', EXP[mm.id] ? '✓ 已选' : '＋ 选中');
-        b1.title = EXP[mm.id] ? '不要这一条了' : '把这一条放进要下载的那一份';
-        b1.onclick = function (ev) { ev.stopPropagation(); expToggle(mm.id); };
-        row.appendChild(b1);
-        /*
-         * 「到这条」只在【已经点过一条】的时候才出现。
-         * 一直显示的话，第一次点它没有起点，只能退化成"选这一条" ——
-         * 一个按钮有时候选一条、有时候选一片，那就没法用了。
-         */
-        if (EXP_ANCHOR && EXP_ANCHOR !== mm.id) {
-          var b2 = el('button', 'expbtn b2', '⇥ 到这条');
-          b2.title = '从上一次点的那条一直选到这条（只算画面上看得见的）';
-          b2.onclick = function (ev) { ev.stopPropagation(); expRange(mm.id); };
-          row.appendChild(b2);
-        }
-      })(m);
+      EXP_ROWS[i] = row;
+      (function (mm, ix) {
+        row.onmousedown = function (ev) {
+          // 只认左键：右键是菜单，中键是新标签页，都不该选中什么
+          if (ev && ev.button != null && ev.button !== 0) return;
+          // 不 preventDefault 的话，拖过去会把消息文字整片选蓝，看着像出 bug 了
+          if (ev && ev.preventDefault) ev.preventDefault();
+          if (EXP_SEG) { expSegClick(mm.id); return; }
+          expDragStart(ix);
+        };
+        row.onmouseenter = function () { if (EXP_DRAG) expDragTo(ix); };
+        row.onmouseup = function () { expDragEnd(); };
+      })(m, i);
     }
     if (grouped) {
       row.appendChild(el('div', 'gutter', hmOf(m.t)));
@@ -8071,6 +8178,7 @@ function renderFeed() {
     row.appendChild(content);
     feed.appendChild(row);
   }
+  if (keepTop) { try { feed.scrollTop = keepTop; } catch (e) {} }
 }
 
 /**
@@ -8301,20 +8409,30 @@ function renderSidebar() {
   if (en) {
     en.textContent = EXP_N
       ? ('已选 ' + EXP_N + ' 条，可以下载了。\n' +
-         '文件里只有日期时间、玩家和正文 —— 证书、赞助、R1/R2 都不带。')
+         '文件里只有日期时间、玩家和正文，别的字段都不带。')
       : '挑几条存成 .md 文件，给 AI 或者别人看。\n' +
-        '先用上面的房间 / 日期 / 搜索筛一遍，再点消息选，最省事。';
+        '先用上面的房间 / 日期 / 搜索筛一遍，再拖着选，最省事。';
   }
   var eb0 = $('#b_exp');
   if (eb0) eb0.textContent = EXP_ON ? '选完了（退出）' : '挑选要下载的消息';
   var ebar = $('#expbar');
+  EXP_CNT = null;
   if (ebar) {
     clear(ebar);
     if (EXP_ON) {
       ebar.appendChild(el('span', null, '筛选并下载：'));
-      ebar.appendChild(el('b', null, '已选 ' + EXP_N + ' 条'));
-      ebar.appendChild(el('span', null, '　点消息右边的「＋ 选中」；' +
-        '选过一条之后，别的消息上会多出「⇥ 到这条」，用来一次选一整段。'));
+      EXP_CNT = el('b', null, '已选 ' + EXP_N + ' 条');   // 拖选时直接改它的文字
+      ebar.appendChild(EXP_CNT);
+      ebar.appendChild(el('span', null, EXP_SEG
+        ? (EXP_SEG_A ? '　段选：已点了起点，再点一条当终点，中间整段选上。'
+                     : '　段选：点一条当起点，再点一条当终点。段选只加不减。')
+        : '　单击 = 选一条；按住拖过去 = 选一片（按在已选中的那条上拖，就是一路取消）。'));
+
+      var eSeg = el('button', 'btn' + (EXP_SEG ? ' on' : ''),
+                    EXP_SEG ? '段选：开着（点这里退出）' : '段选：点起点→点终点');
+      eSeg.title = '不用按着拖，点两下选一段；手机上也能用。段选只加不减。';
+      eSeg.onclick = function () { expSegMode(!EXP_SEG); };
+      ebar.appendChild(eSeg);
 
       var eAll = el('button', 'btn', '全选当前筛选（' + view.length + ' 条）');
       eAll.title = '把现在画面上这些全选上';
@@ -8340,20 +8458,22 @@ function renderSidebar() {
       ebar.appendChild(eDone);
 
       /*
-       * 「用真名」只在【真的屏蔽了人】的时候才出现。
-       * 一直摆着的话，没屏蔽任何人时它是个永远没有作用的勾 ——
+       * 「用假 id」只在【真的屏蔽了人】的时候才出现 ——
+       * 它管的就是屏蔽名单上那几个人。没屏蔽任何人时它是个永远没有作用的勾，
        * 而没作用的开关会让人怀疑别的开关也没作用。
+       *
+       * ⚠️ 默认【不勾】= 导出真实 id。
        */
       if (MASK.length) {
         var lab = el('label', null);
         var cb = document.createElement('input');
         cb.type = 'checkbox';
-        cb.checked = EXP_REAL;
-        cb.onchange = function () { EXP_REAL = !!cb.checked; refresh(); };
+        cb.checked = EXP_FAKE;
+        cb.onchange = function () { EXP_FAKE = !!cb.checked; refresh(); };
         lab.appendChild(cb);
         lab.appendChild(el('span', null,
-          EXP_REAL ? '用真名（现在会导出真名！）'
-                   : '用真名（现在按「玩家N」导出，' + MASK.length + ' 人）'));
+          EXP_FAKE ? '用假 id（' + MASK.length + ' 人写成「玩家N」）'
+                   : '用假 id（现在导出的是真实 id）'));
         ebar.appendChild(lab);
       }
     }
@@ -8510,6 +8630,14 @@ $('#nq').oninput = renderNews;
 $('#b_mask').onclick = function () { mkOpen(); };
 $('#b_pick').onclick = function () { hidePick(!HIDE_PICK); };
 $('#b_exp').onclick = function () { expMode(!EXP_ON); };
+/*
+ * 松手【在哪儿都算数】。
+ * 只挂在消息行上的话，拖出消息流之外再松手，EXP_DRAG 就一直挂着 ——
+ * 之后鼠标扫过任何一条消息都会继续刷选，而你根本没按着键。
+ */
+try {
+  document.addEventListener('mouseup', function () { expDragEnd(); });
+} catch (e) {}
 $('#burger').onclick = function () { document.body.classList.toggle('nav'); };
 $('#scrim').onclick = function () { document.body.classList.remove('nav'); };
 document.addEventListener('keydown', function (e) {
