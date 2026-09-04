@@ -1302,7 +1302,7 @@ var DATA = './data';
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = '386b8009f630';
+var PAGE_BUILD = '6b85b568bf39';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -7339,6 +7339,149 @@ function expMd() {
   return L.join('\n');
 }
 
+/*
+ * ============================================================================
+ * ============ 另一种导出：给「Sim Companies 聊天区生成器」的 JSON ============
+ * ============================================================================
+ *
+ * 那是朋友写的一个单页工具（本地跑，不联网）。它有【两个导入口】：
+ *
+ *   「一键导入聊天记录」→ 认游戏 API 那种【原始形状】：
+ *        [{ id, datetime, body, pinned, retracted, deleted, invisible,
+ *           chatroom_name, sender:{ company, logo, certificates,
+ *           contest_wins, supporter, moderatorSign, realmId, justStarted } }]
+ *        它自己算相对时间、自己把远程头像缓存成 data:、自己按时间排序，
+ *        还会拿 chatroom_name 当房间标题。
+ *
+ *   「应用生成器配置」  → 认它自己的状态对象，必须有一个 messages 数组：
+ *        [{ id, sourceId, company, time, datetime, body, avatar, certified,
+ *           certificates, contestWins, supporter, moderator, mine, mentioned,
+ *           realmId, justStarted, pinned, retracted,
+ *           showCopy, showMail, showReply }]
+ *
+ * ⚠️ **两种一起给，装在同一个文件里**：
+ *        { roomTitle, messages:[…生成器形状…], results:[…API 形状…] }
+ *    他那边 extractApiMessages 认 value.results，applyJson 认 value.messages ——
+ *    所以【点哪个按钮都能用】。
+ *
+ *    值不值得多出一份：这个文件是要发给别人的，而"该点哪个按钮"
+ *    只有写代码的人知道。让文件自己两边都对得上，比在聊天里嘱咐一句可靠得多。
+ *    正文那部分是重复的，几百条也就多几十 KB。
+ *
+ * ⚠️ **他那个页面我一行都没改**，也不该改 —— 这份 JSON 是按他【现在】
+ *    的导入口写的。他哪天改了格式，改的是这个函数，不是他的文件。
+ */
+
+/**
+ * JSON 里的正文【保留 :re-30: 原样】，不翻译成产品名。
+ *
+ * 和 .md 正好相反，而且这一条不能合并：
+ *   .md  给人和模型读 → 产品名清楚
+ *   JSON 给生成器画   → 它的 renderRichText 会把 :re-30: 画成产品图标，
+ *                        翻译过去的话那边显示的是"能源研究"四个字，图标全没了
+ */
+function expJsonBody(m) {
+  var s = String(m.body || '');
+  if (EXP_FAKE && MASK_RE) {
+    MASK_RE.lastIndex = 0;
+    s = s.replace(MASK_RE, function (h) { return maskAtText(h); });
+  }
+  return s;
+}
+
+/** 公司名 / 头像 / 数字 id。跟着「用假 id」那个勾走，和 .md 同一套规矩。 */
+function expWhoJson(m) {
+  var n = MASK_IX[m.sid];
+  // 名字遮了、头像还在的话等于没遮 —— 头像本身就认得出是谁
+  if (n && EXP_FAKE) return { company: '玩家' + n, logo: '', sid: 0 };
+  return { company: String(m.name || ''), logo: String(m.logo || ''),
+           sid: Number(m.sid) || 0 };
+}
+
+/**
+ * "39 minutes ago" 这种相对时间。
+ *
+ * ⚠️ 这是【照抄】他那边 formatImportedTime 的规则，连 45 秒那个分界都一样。
+ *    只有「应用生成器配置」那条路会用到它（那条路直接把这个字符串印出来）；
+ *    走「一键导入聊天记录」的话他自己算，这个字段用不上。
+ *    两边不一致的话，同一份文件点两个按钮会显示出两种时间。
+ */
+function expAgo(t) {
+  var sec = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (sec < 45) return 'just now';
+  var min = Math.floor(sec / 60);
+  if (min < 60) return min === 1 ? 'a minute ago' : min + ' minutes ago';
+  var hr = Math.floor(min / 60);
+  if (hr < 24) return hr === 1 ? 'an hour ago' : hr + ' hours ago';
+  var day = Math.floor(hr / 24);
+  if (day < 30) return day === 1 ? 'a day ago' : day + ' days ago';
+  try { return new Date(t).toLocaleString(); } catch (e) { return ''; }
+}
+
+function expJson() {
+  var list = expList();
+  var room = roomLabel(sel.room);
+  var api = [], gen = [];
+  list.forEach(function (m) {
+    var w = expWhoJson(m);
+    var iso = '';
+    try { iso = new Date(m.t).toISOString(); } catch (e) { iso = ''; }
+    var body = expJsonBody(m);
+    var cert = Number(m.cert) || 0;
+    /*
+     * ⚠️ 游戏删掉 / 撤回的那几条一律写成 retracted，**绝不写 deleted:true**。
+     *
+     * 他那边第一步就是 rows.filter(x => !x.invisible && !x.deleted) ——
+     * 写 deleted 的话那几条【整条被滤掉】：你明明挑中了它们，
+     * 导过去却凭空少几条，而两边都不报错。
+     * 而 retracted 那条路他是认的（normaliseApiMessage 里
+     * retracted = raw.retracted || raw.deleted），画出来就是划掉的样子。
+     */
+    var gone = !!(m.retracted || m.deleted);
+    api.push({
+      id: m.id,
+      datetime: iso,
+      body: body,
+      pinned: !!m.pinned,
+      retracted: gone,
+      deleted: false,
+      invisible: false,
+      chatroom_name: room,          // 他拿这个当房间标题
+      sender: {
+        id: w.sid,
+        company: w.company,
+        logo: w.logo,
+        certificates: cert,
+        contest_wins: 0,            // 我这边没存这个，老实给 0
+        supporter: !!m.sup,
+        moderatorSign: !!m.mod,
+        // 游戏原始的 realmId 是 0 起（0 = R1）。这里给【原始值】，
+        // 不是页面上显示的那个 +1 过的编号
+        realmId: Number(m.realm) || 0,
+        justStarted: false,
+      },
+    });
+    gen.push({
+      id: 'simco-' + m.id, sourceId: m.id,
+      company: w.company, time: expAgo(m.t), datetime: iso,
+      body: body, avatar: w.logo,
+      certified: cert > 0, certificates: cert, contestWins: 0,
+      supporter: !!m.sup, moderator: !!m.mod,
+      mine: false, mentioned: false,
+      realmId: Number(m.realm) || 0, justStarted: false,
+      pinned: !!m.pinned, retracted: gone,
+      showCopy: true, showMail: true, showReply: true,
+    });
+  });
+  return JSON.stringify({
+    _readme: '给 Sim Companies 聊天区生成器用。两个导入口都能吃这一份：' +
+             '「一键导入聊天记录」读 results，「应用生成器配置」读 messages，两份内容一样。',
+    roomTitle: room,
+    messages: gen,
+    results: api,
+  }, null, 1);
+}
+
 /**
  * 文件名。带房间、【内容的】日期和条数 —— 下载文件夹里一眼认得出哪份是哪份。
  *
@@ -7346,16 +7489,16 @@ function expMd() {
  *    用导出日期的话，同一天导五段不同时期的记录，文件名全长一个样，
  *    只能靠条数区分 —— 而条数一撞就彻底认不出来了。
  */
-function expName() {
+function expName(ext) {
   var list = expList();
   var a = list.length ? dayOf(list[0].t) : dayOf(Date.now());
   var b = list.length ? dayOf(list[list.length - 1].t) : a;
   return 'simco-' + (sel.room || 'chat') + '-' + a + (b === a ? '' : '_' + b) +
-         '-' + EXP_N + '条.md';
+         '-' + EXP_N + '条.' + (ext || 'md');
 }
 
-function expDownload() {
-  if (!EXP_N) return;
+/** 存一份文件下来。两种导出共用。 */
+function expSave(text, name, mime) {
   /*
    * ⚠️ 用 Blob + createObjectURL，**不要 data: URL**。
    *
@@ -7365,11 +7508,10 @@ function expDownload() {
    * Blob 没有这个长度问题，而且省掉那次全文编码。
    */
   try {
-    var url = URL.createObjectURL(
-      new Blob([expMd()], { type: 'text/markdown;charset=utf-8' }));
+    var url = URL.createObjectURL(new Blob([text], { type: mime }));
     var a = document.createElement('a');
     a.href = url;
-    a.download = expName();
+    a.download = name;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -7378,6 +7520,14 @@ function expDownload() {
   } catch (e) {
     try { alert('下载没成功：' + (e && e.message)); } catch (e2) {}
   }
+}
+function expDownload() {
+  if (!EXP_N) return;
+  expSave(expMd(), expName('md'), 'text/markdown;charset=utf-8');
+}
+function expDownloadJson() {
+  if (!EXP_N) return;
+  expSave(expJson(), expName('json'), 'application/json;charset=utf-8');
 }
 
 /*
@@ -8843,7 +8993,8 @@ function renderSidebar() {
   if (en) {
     en.textContent = EXP_N
       ? ('已选 ' + EXP_N + ' 条，可以下载了。\n' +
-         '文件里只有日期时间、玩家和正文，别的字段都不带。')
+         '.md ＝ 给人和 AI 读，只有日期时间、玩家和正文。\n' +
+         '.json ＝ 给「聊天区生成器」用，连头像、证书、置顶、撤回一起带过去。')
       : '挑几条存成 .md 文件，给 AI 或者别人看。\n' +
         '先用上面的房间 / 日期 / 搜索筛一遍，再拖着选，最省事。';
   }
@@ -8875,8 +9026,16 @@ function renderSidebar() {
 
       if (EXP_N) {
         var eDl = el('button', 'btn', '⬇ 下载 .md');
+        eDl.title = '给人和 AI 读的那种：日期时间 + 玩家 + 正文';
         eDl.onclick = function () { expDownload(); };
         ebar.appendChild(eDl);
+
+        var eJs = el('button', 'btn', '⬇ 下载 .json');
+        eJs.title = '给「Sim Companies 聊天区生成器」用 —— ' +
+          '打开那个文件，把 .json 的内容粘进「导入聊天 JSON / 配置」，' +
+          '点哪个导入按钮都行。带头像、证书、赞助、置顶、撤回。';
+        eJs.onclick = function () { expDownloadJson(); };
+        ebar.appendChild(eJs);
 
         var eCl = el('button', 'btn', '清空');
         eCl.onclick = function () {
