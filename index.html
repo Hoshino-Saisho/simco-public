@@ -759,8 +759,39 @@
   #hidebar{display:none;align-items:center;gap:10px;flex-wrap:wrap;
     padding:7px 16px;background:rgba(134,239,172,.10);
     border-bottom:1px solid var(--line);font-size:12.5px;color:var(--tx);flex:0 0 auto}
-  body.picking #hidebar{display:flex}
+  /*
+   * ⚠️ 两个条都要【只在聊天记录这个模式下】才显示。
+   *    不加这一串 :not 的话，挑着挑着切去计算器，那条绿的还挂在最上面 ——
+   *    而那个模式里根本没有消息可挑。
+   */
+  body.picking:not(.mode-calc):not(.mode-news):not(.mode-map) #hidebar{display:flex}
   #hidebar b{color:var(--ok)}
+
+  /*
+   * 「筛选并下载」。颜色【故意和挑选模式不一样】（蓝 vs 绿）——
+   * 两个模式都是"点消息"，长得一样的话，你会以为自己在藏消息，
+   * 其实在选导出（或者反过来），而两边看着都正常。
+   */
+  .msg .expbtn{position:absolute;top:4px;z-index:2;
+    padding:2px 8px;font-size:11px;border-radius:6px;cursor:pointer;
+    background:var(--panel2);color:var(--mut);border:1px solid var(--line);
+    font-family:inherit;opacity:0;transition:opacity .12s;white-space:nowrap}
+  .msg .expbtn.b1{right:6px}
+  .msg .expbtn.b2{right:76px}
+  body.exporting .msg{position:relative}
+  body.exporting .msg:hover .expbtn,body.exporting .msg.exp .expbtn{opacity:1}
+  /* 手机上没有 hover，一律显出来 */
+  @media(hover:none){ body.exporting .msg .expbtn{opacity:1} }
+  .msg .expbtn:hover{border-color:var(--acc);color:var(--acc)}
+  body.exporting .msg.exp{background:rgba(125,211,252,.10);
+    box-shadow:inset 3px 0 0 var(--acc)}
+  body.exporting .msg.exp .expbtn.b1{border-color:var(--acc);color:var(--acc);opacity:1}
+  #expbar{display:none;align-items:center;gap:10px;flex-wrap:wrap;
+    padding:7px 16px;background:rgba(125,211,252,.10);
+    border-bottom:1px solid var(--line);font-size:12.5px;color:var(--tx);flex:0 0 auto}
+  body.exporting:not(.mode-calc):not(.mode-news):not(.mode-map) #expbar{display:flex}
+  #expbar b{color:var(--acc)}
+  #expbar label{display:inline-flex;align-items:center;gap:5px;cursor:pointer}
 
   /*
    * 屏蔽头像 / ID 的那个面板。
@@ -1069,6 +1100,11 @@
     <div class="note" id="hidenote"></div>
   </div>
   <div class="sec">
+    <h2>筛选并下载</h2>
+    <button class="btn" id="b_exp">挑选要下载的消息</button>
+    <div class="note" id="expnote"></div>
+  </div>
+  <div class="sec">
     <h2>鸥子</h2>
     <label class="opt" id="gullwrap">
       <input type="checkbox" id="gullon" checked>
@@ -1092,6 +1128,7 @@
     <input type="search" id="q" placeholder="搜索消息内容…">
   </div>
   <div id="hidebar"></div>
+  <div id="expbar"></div>
   <div id="deep"></div>
   <!--
     正文列 + 右边预留的那一栏。
@@ -1174,7 +1211,7 @@ var DATA = './data';
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = 'bf5520b678dc';
+var PAGE_BUILD = '77aeef86ec36';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -6955,6 +6992,204 @@ function hidePick(on) {
 
 /*
  * ============================================================================
+ * ======================= 筛选并下载（导出 Markdown）=========================
+ * ============================================================================
+ *
+ * 挑几条消息，存成一个 .md 文件 —— 给 AI 读，也给人读。
+ *
+ * ---- 只导出三样：日期时间、玩家、正文 ----
+ *
+ * 证书、赞助、R1/R2、置顶、撤回、头像、房间标签，一律不进文件。
+ * 这不是图省事，是**信噪比**：把一份聊天记录喂给模型时，
+ * 每一个和内容无关的字段都在稀释它的注意力，
+ * 而「证书 3」这种东西对"他们到底在聊什么"没有任何贡献。
+ * 人读也一样 —— 那几个标签在网页上有用，是因为你能一眼扫过去；
+ * 在纯文本里它们只是横在每一行中间的噪音。
+ *
+ * ---- 和「暂时不显示」是两个独立的挑选 ----
+ *
+ * 互不影响：藏起来的消息照样能被选进导出（你可能正是想把它单拎出来看）。
+ * 两个模式的颜色也【故意不一样】—— 都是"点消息"，长得一样的话
+ * 你会以为自己在藏消息、其实在选导出，而两边看着都正常。
+ *
+ * ---- 屏蔽优先 ----
+ *
+ * 屏蔽了的人，导出时写成「玩家N」，正文里 @ 到他的地方一起换。
+ * 这一条和鸥子那边是同一个道理，而且更要紧：**文件是会被发出去的。**
+ * 屏蔽本来就是为了"录视频时别露脸"，结果导出的文件里全是真名，
+ * 那这个功能等于白做 —— 而这是【文件已经发出去之后】才会发现的事故。
+ * 真要用真名，条上有个勾（默认不勾），当场看得见自己在导哪一种。
+ */
+var EXP_ON = false;          // 不存偏好：和挑选模式一样，是临时状态
+var EXP = {};                // 消息id -> 1
+var EXP_N = 0;
+var EXP_ANCHOR = 0;          // 上一次点的那条，框选时当起点
+var EXP_REAL = false;        // 用真名导出（只有屏蔽着人的时候才有意义）
+
+function expMode(on) {
+  EXP_ON = !!on;
+  try { document.body.classList.toggle('exporting', EXP_ON); } catch (e) {}
+  refresh();
+}
+function expToggle(id) {
+  id = Number(id) || 0;
+  if (!id) return;
+  if (EXP[id]) { delete EXP[id]; EXP_N--; }
+  else { EXP[id] = 1; EXP_N++; EXP_ANCHOR = id; }
+  refresh();
+}
+/**
+ * 从上一次点的那条，一直选到这一条。
+ *
+ * ⚠️ 用的是【当前画面上的顺序】，不是全部消息的顺序。
+ *    先筛选、再框选，选到的就只有筛出来的那些 —— 这正是"筛选并下载"的用法。
+ *    按全量算的话，"从这条到那条"会把中间那些被筛掉的也一起卷进来，
+ *    而你在画面上根本看不见它们 —— 于是文件里凭空多出几百条，
+ *    你还以为是自己点错了。
+ */
+function expRange(id) {
+  id = Number(id) || 0;
+  var a = -1, b = -1, i;
+  for (i = 0; i < view.length; i++) {
+    if (view[i].id === EXP_ANCHOR) a = i;
+    if (view[i].id === id) b = i;
+  }
+  if (a < 0 || b < 0) { expToggle(id); return; }   // 起点被筛掉了，退化成点一条
+  if (a > b) { var t = a; a = b; b = t; }
+  for (i = a; i <= b; i++) {
+    if (!EXP[view[i].id]) { EXP[view[i].id] = 1; EXP_N++; }
+  }
+  EXP_ANCHOR = id;
+  refresh();
+}
+function expClear() { EXP = {}; EXP_N = 0; EXP_ANCHOR = 0; refresh(); }
+/** 把现在筛出来的全选上（房间/日期/搜索/只看某人 筛完剩下的那些）。 */
+function expAllShown() {
+  view.forEach(function (m) { if (!EXP[m.id]) { EXP[m.id] = 1; EXP_N++; } });
+  if (view.length) EXP_ANCHOR = view[view.length - 1].id;
+  refresh();
+}
+/** 选中的那些，按时间排好。 */
+function expList() {
+  var out = [];
+  ALL.forEach(function (m) { if (EXP[m.id]) out.push(m); });
+  out.sort(function (a, b) { return a.t - b.t || a.id - b.id; });
+  return out;
+}
+
+/** 一个人写成什么样。屏蔽优先（除非勾了"用真名"）。 */
+function expWho(m) {
+  var n = MASK_IX[m.sid];
+  if (n && !EXP_REAL) return '玩家' + n;
+  return String(m.name || '(未知)') + '(#' + (Number(m.sid) || 0) + ')';
+}
+
+/**
+ * 正文转纯文本。**和网页上看到的一样**：
+ *   :re-30:      → 能源研究（认不出来的原样留着，绝不留空）
+ *   @被屏蔽的人   → @玩家N
+ *
+ * 文件里看到的和屏幕上看到的对不上，是最容易让人以为"导错了"的一种事。
+ */
+function expBody(m) {
+  var s = String(m.body || '');
+  if (!EXP_REAL && MASK_RE) {
+    MASK_RE.lastIndex = 0;
+    s = s.replace(MASK_RE, function (h) { return maskAtText(h); });
+  }
+  RE_ICON.lastIndex = 0;
+  s = s.replace(RE_ICON, function (c) { return productName(c) || c; });
+  return s;
+}
+
+/**
+ * 拼成 Markdown。
+ *
+ * 形状是照着"给模型读"挑的：
+ *   · 开头一小段说明【这是什么、含哪几样】—— 模型拿到一份没有出处的
+ *     聊天记录时，很容易开始猜它是什么，说明白比省那几行值。
+ *   · 日期用 `## `，一天一段 —— 模型和人都靠它定位。
+ *   · 正文用引用块 `> ` —— 和"谁在什么时候说的"那一行分开，
+ *     正文里出现 # 或 - 开头的行时也不会被当成标题或列表。
+ */
+function expMd() {
+  var list = expList();
+  var L = [];
+  L.push('# Sim Companies 聊天记录节选');
+  L.push('');
+  L.push('- 房间：' + roomLabel(sel.room));
+  if (list.length) {
+    L.push('- 时间范围：' + dayOf(list[0].t) + ' ' + hmOf(list[0].t) + ' — ' +
+           dayOf(list[list.length - 1].t) + ' ' + hmOf(list[list.length - 1].t) +
+           '（本地时间）');
+  }
+  L.push('- 条数：' + list.length);
+  /*
+   * ⚠️ 这一行【不要去枚举没导出的那些字段】。
+   *    写成"证书、赞助、R1/R2 都没有"看着更清楚，可那几个词就真的
+   *    出现在文件里了 —— 模型读到会以为这份记录里有这些东西。
+   *    说清楚"有哪三样"就够了，没有的东西不需要点名。
+   */
+  L.push('- 本文件只含【日期时间、玩家、正文】三样，别的字段都没有导出。');
+  if (!EXP_REAL && MASK.length) {
+    L.push('- 其中 ' + MASK.length + ' 人按「玩家N」匿名，正文里 @ 到他们的地方一起换过了。');
+  }
+  L.push('');
+  var day = '';
+  list.forEach(function (m) {
+    var d = dayOf(m.t);
+    if (d !== day) { day = d; L.push('## ' + d); L.push(''); }
+    L.push('**' + hmOf(m.t) + '**　' + expWho(m));
+    L.push('');
+    expBody(m).split('\n').forEach(function (ln) { L.push('> ' + ln); });
+    L.push('');
+  });
+  return L.join('\n');
+}
+
+/**
+ * 文件名。带房间、【内容的】日期和条数 —— 下载文件夹里一眼认得出哪份是哪份。
+ *
+ * ⚠️ 日期用的是【消息本身的日期】，不是导出的日期。
+ *    用导出日期的话，同一天导五段不同时期的记录，文件名全长一个样，
+ *    只能靠条数区分 —— 而条数一撞就彻底认不出来了。
+ */
+function expName() {
+  var list = expList();
+  var a = list.length ? dayOf(list[0].t) : dayOf(Date.now());
+  var b = list.length ? dayOf(list[list.length - 1].t) : a;
+  return 'simco-' + (sel.room || 'chat') + '-' + a + (b === a ? '' : '_' + b) +
+         '-' + EXP_N + '条.md';
+}
+
+function expDownload() {
+  if (!EXP_N) return;
+  /*
+   * ⚠️ 用 Blob + createObjectURL，**不要 data: URL**。
+   *
+   * data:text/markdown,… 要把整份文本 encodeURIComponent 一遍，
+   * 而几千条聊天记录拼出来的那个字符串会长到浏览器直接拒绝导航 ——
+   * 表现是【点下载没反应】，控制台一个报错都没有。
+   * Blob 没有这个长度问题，而且省掉那次全文编码。
+   */
+  try {
+    var url = URL.createObjectURL(
+      new Blob([expMd()], { type: 'text/markdown;charset=utf-8' }));
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = expName();
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    // 立刻 revoke 的话，有的浏览器还没来得及开始下载。等几秒再收。
+    setTimeout(function () { try { URL.revokeObjectURL(url); } catch (e) {} }, 8000);
+  } catch (e) {
+    try { alert('下载没成功：' + (e && e.message)); } catch (e2) {}
+  }
+}
+
+/*
+ * ============================================================================
  * ================================ 鸥子 ======================================
  * ============================================================================
  *
@@ -7748,6 +7983,7 @@ function renderFeed() {
     var row = el('div', 'msg' + (grouped ? '' : ' first') +
                         ((m.retracted || m.deleted) ? ' gone' : '') +
                         ((markSet && markSet.has(m.id)) ? ' picked' : '') +
+                        (EXP[m.id] ? ' exp' : '') +
                         (isHid ? ' hid' : '') +
                         ((dimOn && m._r !== sel.realm) ? ' dim' : ''));
     /*
@@ -7761,6 +7997,26 @@ function renderFeed() {
         hb.title = HIDE[mm.id] ? '让它重新显示' : '暂时不显示这一条（数据不动）';
         hb.onclick = function (ev) { ev.stopPropagation(); hideToggle(mm.id); };
         row.appendChild(hb);
+      })(m);
+    }
+    /* 导出模式的两个按钮，同样【只在这个模式下才建】，理由见上面那段。 */
+    if (EXP_ON) {
+      (function (mm) {
+        var b1 = el('button', 'expbtn b1', EXP[mm.id] ? '✓ 已选' : '＋ 选中');
+        b1.title = EXP[mm.id] ? '不要这一条了' : '把这一条放进要下载的那一份';
+        b1.onclick = function (ev) { ev.stopPropagation(); expToggle(mm.id); };
+        row.appendChild(b1);
+        /*
+         * 「到这条」只在【已经点过一条】的时候才出现。
+         * 一直显示的话，第一次点它没有起点，只能退化成"选这一条" ——
+         * 一个按钮有时候选一条、有时候选一片，那就没法用了。
+         */
+        if (EXP_ANCHOR && EXP_ANCHOR !== mm.id) {
+          var b2 = el('button', 'expbtn b2', '⇥ 到这条');
+          b2.title = '从上一次点的那条一直选到这条（只算画面上看得见的）';
+          b2.onclick = function (ev) { ev.stopPropagation(); expRange(mm.id); };
+          row.appendChild(b2);
+        }
       })(m);
     }
     if (grouped) {
@@ -8041,6 +8297,68 @@ function renderSidebar() {
     }
   }
 
+  var en = $('#expnote');
+  if (en) {
+    en.textContent = EXP_N
+      ? ('已选 ' + EXP_N + ' 条，可以下载了。\n' +
+         '文件里只有日期时间、玩家和正文 —— 证书、赞助、R1/R2 都不带。')
+      : '挑几条存成 .md 文件，给 AI 或者别人看。\n' +
+        '先用上面的房间 / 日期 / 搜索筛一遍，再点消息选，最省事。';
+  }
+  var eb0 = $('#b_exp');
+  if (eb0) eb0.textContent = EXP_ON ? '选完了（退出）' : '挑选要下载的消息';
+  var ebar = $('#expbar');
+  if (ebar) {
+    clear(ebar);
+    if (EXP_ON) {
+      ebar.appendChild(el('span', null, '筛选并下载：'));
+      ebar.appendChild(el('b', null, '已选 ' + EXP_N + ' 条'));
+      ebar.appendChild(el('span', null, '　点消息右边的「＋ 选中」；' +
+        '选过一条之后，别的消息上会多出「⇥ 到这条」，用来一次选一整段。'));
+
+      var eAll = el('button', 'btn', '全选当前筛选（' + view.length + ' 条）');
+      eAll.title = '把现在画面上这些全选上';
+      eAll.onclick = function () { expAllShown(); };
+      ebar.appendChild(eAll);
+
+      if (EXP_N) {
+        var eDl = el('button', 'btn', '⬇ 下载 .md');
+        eDl.onclick = function () { expDownload(); };
+        ebar.appendChild(eDl);
+
+        var eCl = el('button', 'btn', '清空');
+        eCl.onclick = function () {
+          if (typeof confirm === 'function' &&
+              !confirm('把选中的这 ' + EXP_N + ' 条全部取消？')) return;
+          expClear();
+        };
+        ebar.appendChild(eCl);
+      }
+
+      var eDone = el('button', 'btn', '退出');
+      eDone.onclick = function () { expMode(false); };
+      ebar.appendChild(eDone);
+
+      /*
+       * 「用真名」只在【真的屏蔽了人】的时候才出现。
+       * 一直摆着的话，没屏蔽任何人时它是个永远没有作用的勾 ——
+       * 而没作用的开关会让人怀疑别的开关也没作用。
+       */
+      if (MASK.length) {
+        var lab = el('label', null);
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = EXP_REAL;
+        cb.onchange = function () { EXP_REAL = !!cb.checked; refresh(); };
+        lab.appendChild(cb);
+        lab.appendChild(el('span', null,
+          EXP_REAL ? '用真名（现在会导出真名！）'
+                   : '用真名（现在按「玩家N」导出，' + MASK.length + ' 人）'));
+        ebar.appendChild(lab);
+      }
+    }
+  }
+
   var mn = $('#masknote');
   if (mn) {
     mn.textContent = MASK.length
@@ -8191,6 +8509,7 @@ $('#qs').oninput = renderSidebar;
 $('#nq').oninput = renderNews;
 $('#b_mask').onclick = function () { mkOpen(); };
 $('#b_pick').onclick = function () { hidePick(!HIDE_PICK); };
+$('#b_exp').onclick = function () { expMode(!EXP_ON); };
 $('#burger').onclick = function () { document.body.classList.toggle('nav'); };
 $('#scrim').onclick = function () { document.body.classList.remove('nav'); };
 document.addEventListener('keydown', function (e) {
