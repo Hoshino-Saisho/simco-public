@@ -186,14 +186,29 @@
    * 不够宽就还是那条细线，和加这个功能之前一模一样。
    */
   #rphead,#rpfeed{display:none}
-  @media(min-width:1430px){
+  @media(min-width:1490px){
     body:not(.compact) #rphead{display:flex}
     body:not(.compact) #rpfeed{display:block}
   }
-  @media(min-width:990px){
+  @media(min-width:1050px){
     body.compact #rphead{display:flex}
     body.compact #rpfeed{display:block}
   }
+  /*
+   * ⚠️ **两边共用同一个「显示」档。**
+   *
+   * 右栏原来自己写死了一套（padding 12、头像 30），于是切「紧凑」时
+   * 左边变了、右边纹丝不动 —— 而这个功能的全部意义就是
+   * "右边和左边看起来是同一个东西"。录视频时两边不一样最出戏。
+   *
+   * 现在 .msg / .av / .daysep 那几条【共用规则】直接落在右栏上，
+   * 右栏这边只做一件事：把内容【封顶】到和正文一样的宽度。
+   * 不封顶的话，2560 的屏上右栏能有 1400px ——
+   * 一行拉那么长眼睛从行尾跳回行首会找不着地方，
+   * 而这正是当初把正文封顶的那个理由。
+   */
+  #rphead,#rpfeed{max-width:var(--colmax)}
+  body.compact #rphead,body.compact #rpfeed{max-width:var(--colmax-compact)}
   #rphead{flex:0 0 auto;padding:9px 12px;border-bottom:1px solid var(--line);
     background:var(--panel);display:flex;flex-direction:column;gap:6px}
   #rphead .rptitle{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
@@ -204,14 +219,11 @@
   #rpfeed{flex:1 1 auto;overflow-y:auto;overscroll-behavior:contain;
     padding:8px 0 40px;min-height:0}
   /*
-   * 右边这一栏比正文窄不少，两边各留 22px 就太挤了 —— 收到 12。
-   * 头像也小一圈：38 在这个宽度里会把正文挤成一条。
+   * 这里【故意什么尺寸都不写】。padding、头像、日期条的留白全部走
+   * .msg / .av / .daysep 那几条共用规则，「紧凑」档一开两边一起变。
+   * 在这儿补一句 `#rpfeed .msg{padding:12px}` 之类的，就等于把右栏
+   * 从那个开关里摘出去了 —— 而它看起来只是"稍微好看一点"。
    */
-  #rpfeed .msg{padding-left:12px;padding-right:12px}
-  #rpfeed .av,#rpfeed .gutter{width:30px;height:30px;flex-basis:30px}
-  #rpfeed .av.ph{font-size:13px}
-  #rpfeed .gutter{height:auto}
-  #rpfeed .daysep{margin-left:12px;margin-right:12px}
   /* 空着的时候那块拖放区 */
   #rpdrop{margin:14px 12px;padding:22px 14px;border:1px dashed var(--line);
     border-radius:10px;text-align:center;color:var(--dim);font-size:12.5px;
@@ -1290,7 +1302,7 @@ var DATA = './data';
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = '44b41ffd7bd9';
+var PAGE_BUILD = '386b8009f630';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -1449,7 +1461,7 @@ function savePref() {
 }
 
 /*
- * 正文列宽：normal（880）/ compact（440）。
+ * 显示档：normal（880）/ compact（440）。**左边正文和右边回放共用这一档。**
  *
  * 紧凑那一档是给【录视频】用的：一行短，长消息不会横着拖出画面，
  * 整段对话在画面里占的横向空间小得多，剪辑时好放。
@@ -8722,8 +8734,9 @@ function renderSidebar() {
   var wbox = $('#widthchips'); clear(wbox);
   [['normal', '正常'], ['compact', '紧凑']].forEach(function (p) {
     var c = el('div', 'chip' + (sel.width === p[0] ? ' on' : ''), p[1]);
-    c.title = p[0] === 'compact' ? '正文列 440px —— 录视频用，长消息不会横着拖出画面'
-                                 : '正文列 880px —— 平时看存档';
+    c.title = p[0] === 'compact'
+      ? '440px —— 录视频用，长消息不会横着拖出画面。左边正文和右边回放一起变'
+      : '880px —— 平时看存档。左边正文和右边回放一起变';
     c.onclick = function () {
       if (sel.width === p[0]) return;
       sel.width = p[0];
@@ -8733,9 +8746,10 @@ function renderSidebar() {
     };
     wbox.appendChild(c);
   });
-  $('#widthnote').textContent = sel.width === 'compact'
-    ? '正文 440px。录视频用 —— 一行短，长消息不会横着拖出画面。'
-    : '正文 880px。屏幕再宽也不会一路铺到最右边。';
+  $('#widthnote').textContent = (sel.width === 'compact'
+    ? '440px。录视频用 —— 一行短，长消息不会横着拖出画面。'
+    : '880px。屏幕再宽也不会一路铺到最右边。') +
+    '\n左边的聊天记录和右边的回放【一起】跟着这一档走。';
 
   // ---- 领域 ----
   var rlbox = $('#realms'); clear(rlbox);
