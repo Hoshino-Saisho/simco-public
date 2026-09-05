@@ -1404,7 +1404,7 @@ var DATA = './data';
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = '100af8eba369';
+var PAGE_BUILD = '67541f855761';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -3993,8 +3993,14 @@ function mapRestRating(o) {
         : ('超出甜点位 $' + (Math.round((price - MAP_REST_SWEET) * 100) / 100)) },
     { n: '沟通', v: Math.max(0, Math.min(100, mapExecPoints().fin.cm)) * 0.01, max: 1,
       why: 'CMO 沟通 ' + mapExecPoints().fin.cm + ' 点' },
-    { n: '加成', v: mapSaleBonus() > 0 ? 0.02 : 0, max: 0.02,
-      why: mapSaleBonus() > 0 ? '有销售加成' : '没有销售加成' },
+    /*
+     * ⚠️ 这一项是【每一点销售加成 × 0.02】，不是"有就给 0.02"。
+     *    我第一版读成了开关 —— 那样它永远只值 0.02 分，等于不存在；
+     *    实际上 +50% 的销售加成能给 1 分，和 CMO 沟通那一项一个量级。
+     */
+    { n: '加成', v: mapSaleBonus() * 0.02, max: null,
+      why: '销售加成 ' + mnum(Math.round(mapSaleBonus() * 10) / 10) +
+           ' 点 × 0.02（每一点都算，不是有没有）' },
   ];
   var sum = 0;
   parts.forEach(function (p) { sum += p.v; });
@@ -4007,8 +4013,9 @@ function mapRestRating(o) {
  * 用来回答"我还差多少总品质才能摸到 10 分"。
  */
 function mapRestOtherCap() {
-  var n = 0;
-  [1.5, 2.5, 0.5, 0.5, 1, 0.02].forEach(function (v) { n += v; });
+  // 销售加成那一项也没有上限（每点 0.02），所以它按【当前值】算进来
+  var n = mapSaleBonus() * 0.02;
+  [1.5, 2.5, 0.5, 0.5, 1].forEach(function (v) { n += v; });
   return n;
 }
 /** 要把评分顶到 10，总品质至少要多少。 */
@@ -11780,6 +11787,54 @@ document.addEventListener('visibilitychange', function () {
     mapReset();
   };
 })();
+
+/* ======================= 给油猴插件的出口 =======================
+ *
+ * ⚠️ 整个页面是包在一个 IIFE 里的 —— 也就是说这里面的函数
+ *    **一个都不在 window 上**。插件（@grant none，和页面同一个 window）
+ *    看不见它们。
+ *
+ *    这一点第一版没注意到：插件里写了 window.mapRestRating(...)，
+ *    语法上没问题、测试也全绿（测试里是自己塞的假函数），
+ *    但在真页面上那个悬浮键**永远不亮**，而且不会报任何错。
+ *
+ * 所以在这里【明确地】导出一小块 —— 不是把内部摊开，
+ * 是列一张清单：插件的餐馆优化器需要哪些，就给哪些。
+ *
+ * ⚠️ 加了新东西给插件用，**必须往这张表里补一行**。
+ *    查看器那边有一条测试专门比对：插件里声明要用的名字，
+ *    这张表里必须都有 —— 漏一个就红。
+ */
+/*
+ * ⚠️ 这里【不吞异常】。
+ *    第一版写的是 try { … } catch (e) {}，导出要是失败了
+ *    页面照常跑、控制台一片安静，而插件那边只会说"页面太老" ——
+ *    于是查的人会去怀疑版本，而真正的原因在这一行。
+ *    导出坏了就让它在控制台里喊一声。
+ */
+try {
+  window.SIMCO_MAP = {
+    // 页面指纹：插件拿它判断"是不是真的发了新的"
+    build: PAGE_BUILD,
+    // 状态
+    get MAP() { return MAP; },
+    mapCur: mapCur, mapListAt: mapListAt, mapLvNow: mapLvNow, mapLvAt: mapLvAt,
+    mapStock: mapStock, mapStockQ: mapStockQ, mapAdmin: mapAdmin,
+    // 餐馆
+    mapRestRating: mapRestRating, mapRestOcc: mapRestOcc,
+    mapRestNeed: mapRestNeed, mapRestWage: mapRestWage,
+    mapRestSeats: mapRestSeats, mapRestMenuOk: mapRestMenuOk,
+    mapRestOtherSeats: mapRestOtherSeats, mapRestAt: mapRestAt,
+    mapRestCfgAt: mapRestCfgAt, mapRestStyle: mapRestStyle,
+    MAP_REST_PRICE_MIN: MAP_REST_PRICE_MIN,
+    MAP_REST_PRICE_MAX: MAP_REST_PRICE_MAX,
+    MAP_REST_RATING_MAX: MAP_REST_RATING_MAX,
+    MAP_REST_BLD: MAP_REST_BLD,
+  };
+} catch (e) {
+  try { console.error('[simco] SIMCO_MAP 导出失败 —— 插件的餐馆优化器会用不了：', e); }
+  catch (e2) {}
+}
 
 boot();
 })();
