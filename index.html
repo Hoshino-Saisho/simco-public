@@ -402,6 +402,10 @@
     border:1px solid var(--warn);background:rgba(250,204,21,.07);font-size:12px}
   .mrestwarn b{display:block;margin-bottom:4px;color:var(--warn)}
   .mrestwarn div{white-space:pre-wrap;line-height:1.6;color:var(--mut)}
+  .mrestnext{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+    margin:10px 0;padding:8px 11px;border:1px solid var(--acc);
+    border-radius:9px;font-size:12px}
+  .mrestnext b{color:var(--acc)}
   .mrestmenu{margin:10px 0;padding:9px 11px;border:1px solid var(--line);
     border-radius:9px}
   .mrestacct{margin:10px 0;padding:9px 11px;border:1px solid var(--line);
@@ -1400,7 +1404,7 @@ var DATA = './data';
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = 'c3670e8567da';
+var PAGE_BUILD = '100af8eba369';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -3820,11 +3824,30 @@ function mapQNext(p) {
   }
   return null;
 }
-/** 这个资源在第 H 小时的品质等级。 */
+/**
+ * 这个资源在第 H 小时【能造出】的品质等级（研究算出来的）。
+ * 自己开工造东西时，货的品质就取它。
+ */
 function mapQualityAt(id, H) {
   var L = mapLineOf(id);
   if (!L) return 0;
   return mapQFromPatents(mapPatentsAt(L.k, H === undefined ? mapCur() : H));
+}
+/**
+ * 【手上这一批货】的品质。
+ *
+ * ⚠️ 和 mapQualityAt 是两件事：
+ *      mapQualityAt  = 我能造多高（研究等级）
+ *      mapStockQ     = 我手上这批是多少（买来的 / 开局带的 / 当初造的）
+ *    餐馆评分和零售速度看的是**手上这批**。用研究等级去算的话，
+ *    "买了一批 Q8 的奶酪"这件事完全不起作用，而屏幕上看不出为什么。
+ *
+ * 仓库里没有就回落到研究等级 —— 那是"如果现在造一批会是多少"。
+ */
+function mapStockQ(id) {
+  var g = mapStock(id);
+  if (!g) return mapQualityAt(id);
+  return g.ql || 0;
 }
 
 
@@ -3949,8 +3972,9 @@ function mapRestWage(lv, style, staff) {
  */
 function mapRestRating(o) {
   if (!mapRestMenuOk(o.menu)) return { r: 0, parts: [], empty: true };
+  // ⚠️ 用【仓库里这批货】的品质 —— 餐馆吃的是手上的料，不是研究等级
   var qs = 0;
-  o.menu.forEach(function (id) { qs += mapQualityAt(id); });
+  o.menu.forEach(function (id) { qs += mapStockQ(id); });
   var q = o.menu.length ? qs / o.menu.length : 0;
   var price = Number(o.price) || 0;
   var parts = [
@@ -4058,22 +4082,23 @@ function mapRestStops(k, H) {
 function mapRestAcct(x, e, H) {
   var lv = mapLvAt(x, H);
   var cyc = mapRestCycles(e, H);
-  var need = mapRestNeed(e.menu, lv, e.style);
+  var cfg = mapRestCfgAt(e, H);
+  var need = mapRestNeed(cfg.menu, lv, e.style);
   var seats = mapRestSeats(lv, e.style);
-  var wage = mapRestWage(lv, e.style, e.staff);
-  var rt = mapRestRating(e);
+  var wage = mapRestWage(lv, e.style, cfg.staff);
+  var rt = mapRestRating(cfg);
   var stops = 0;
   mapEvOf(x.k, 'rest').forEach(function (o) {
     if (o !== e && o.off != null && o.off <= e.h) stops++;
   });
   var decay = Math.pow(MAP_REST_STOP_DECAY, stops);
   var rating = rt.r * decay;
-  var oc = mapRestOcc(rating, e.price, mapRestOtherSeats(x.k, H));
+  var oc = mapRestOcc(rating, cfg.price, mapRestOtherSeats(x.k, H));
   var served = Math.min(seats, Math.floor(seats * oc.occ));
-  return { e: e, lv: lv, cyc: cyc, need: need, seats: seats, wage: wage,
+  return { e: e, cfg: cfg, lv: lv, cyc: cyc, need: need, seats: seats, wage: wage,
            rt: rt, stops: stops, decay: decay, rating: rating, oc: oc,
            served: served, spoiled: seats - served,
-           revenue: served * (Number(e.price) || 0) };
+           revenue: served * (Number(cfg.price) || 0) };
 }
 /** 一栋餐馆在第 H 小时的全部账。没开着就返回 null。 */
 function mapRestState(x, H) {
@@ -4108,6 +4133,52 @@ function mapRestStart(k, cfg) {
                  staff: !!cfg.staff, menu: cfg.menu.slice() });
   mapSave(); renderMap();
 }
+/**
+ * 改【下一轮】的菜单 / 价格 / 服务。
+ *
+ * ⚠️ 这一轮的料和工资在开轮那一刻**已经扣掉了**，所以改动只能从
+ *    下一轮生效 —— 当场生效的话，会出现"按 3 道菜扣了料、按 6 道菜算评分"，
+ *    而两边各自看都对。
+ *
+ * ⚠️ 改动挂在事件上（`chg`），**不是**另开一笔 rest。
+ *    另开一笔的话，那一笔的轮次要从新的时刻重新起算，
+ *    正在跑的这一轮会被腰斩，已经扣掉的料就白扔了。
+ */
+function mapRestQueue(k, cfg) {
+  if (!mapCanEdit()) return;
+  var H = mapCur(), e = mapRestAt(k, H);
+  if (!e || e.off != null) return;
+  if (!mapRestMenuOk(cfg.menu)) return;
+  var c = mapRestCycles(e, H);
+  if (!c.cur) return;
+  e.chg = { at: c.cur.to,
+            price: Math.max(MAP_REST_PRICE_MIN,
+                     Math.min(MAP_REST_PRICE_MAX, Number(cfg.price) || MAP_REST_SWEET)),
+            staff: !!cfg.staff, menu: cfg.menu.slice() };
+  mapSave(); renderMap();
+}
+/** 撤掉排好的改动。 */
+function mapRestUnqueue(k) {
+  if (!mapCanEdit()) return;
+  var e = mapRestAt(k, mapCur());
+  if (!e || !e.chg) return;
+  delete e.chg;
+  mapSave(); renderMap();
+}
+/**
+ * 这一笔事件在第 H 小时【实际生效】的设置。
+ *
+ * 排了改动而且已经过了那一刻，就用新的；否则用原来的。
+ */
+function mapRestCfgAt(e, H) {
+  if (e.chg && H >= e.chg.at) {
+    return { price: e.chg.price, staff: e.chg.staff, menu: e.chg.menu,
+              style: e.style, changed: true };
+  }
+  return { price: e.price, staff: e.staff, menu: e.menu,
+           style: e.style, changed: false };
+}
+
 /** 排歇业：当前这一轮结算完就停。 */
 function mapRestStop(k) {
   if (!mapCanEdit()) return;
@@ -4195,7 +4266,8 @@ function mapRetail(id, bldName, lv, units, price, opt) {
   if (!m || !(m.sold > 0)) return null;
   var o = opt || {};
   var sat = (o.sat === undefined) ? mapSatur(id) : Number(o.sat);
-  var q = (o.q === undefined) ? mapQualityAt(id) : Number(o.q);
+  // 零售卖的也是仓库里那批货
+  var q = (o.q === undefined) ? mapStockQ(id) : Number(o.q);
   var size = Math.max(1, Number(lv) || 1);
 
   var d = Math.max(0, Math.min(2, 2 - sat));
@@ -4423,10 +4495,10 @@ function mapStockBust() { /* 留着这个名字，调用方不用改；现在不
 
 function mapStockAt(H) {
   var m = {};
-  function add(id, q, c, h) {
+  function add(id, q, c, h, ql) {
     if (!(q > 0)) return;
     if (!m[id]) m[id] = [];
-    m[id].push({ q: q, c: c || 0, h: h || 0 });
+    m[id].push({ q: q, c: c || 0, h: h || 0, ql: Number(ql) || 0 });
   }
   function take(id, q) {
     if (!(q > 0) || !m[id]) return;
@@ -4440,7 +4512,7 @@ function mapStockAt(H) {
   }
   Object.keys(MAP.cost || {}).forEach(function (id) {
     ((MAP.cost[id] && MAP.cost[id].e) || []).forEach(function (x) {
-      add(id, x.q, x.c, x.h);
+      add(id, x.q, x.c, x.h, x.ql);
     });
   });
   mapEv().slice().sort(function (a, b) { return a.h - b.h; }).forEach(function (e) {
@@ -4449,12 +4521,13 @@ function mapStockAt(H) {
       (e.take || []).forEach(function (u) { if (u.id != null) take(u.id, u.n); });
     }
     if (e.t === 'buy' && e.h <= H) {
-      add(e.item, e.units, e.price, 0);
+      add(e.item, e.units, e.price, 0, e.ql);
     }
     if (e.t === 'run' && e.h <= H) {
       (e.uses || []).forEach(function (u) { take(u.id, u.n); });
       var got = mapRunGot(e, H);
-      if (got > 0) add(e.item, got, e.unitC, e.unitH);
+      // 自己造出来的货，品质 = 开工那一刻的研究品质（定死在事件里）
+      if (got > 0) add(e.item, got, e.unitC, e.unitH, e.ql);
     } else if (e.t === 'sell' && e.h <= H) {
       take(e.item, e.units);
       if (e.trUnits > 0) take(MAP_TRANSPORT_ID, e.trUnits);
@@ -4466,10 +4539,27 @@ function mapStockAt(H) {
       var xr = null;
       mapListAt(H).forEach(function (b) { if (b.k === e.k) xr = b; });
       if (xr) {
-        var cy = mapRestCycles(e, H);
-        mapRestNeed(e.menu, mapLvAt(xr, H), e.style).forEach(function (u) {
-          take(u.id, u.n * cy.started);      // 开了几轮就扣几轮
+        /*
+         * ⚠️ 排了「下一轮换菜单」的话，**改动前后的轮次要分开扣**。
+         *    一把按现在的菜单乘轮数的话，改一次菜单会把
+         *    【以前那些轮】的用料也追溯着换掉 —— 历史被改了。
+         */
+        var lvR = mapLvAt(xr, H);
+        var cyAll = mapRestCycles(e, H);
+        var nOld = cyAll.started, nNew = 0;
+        if (e.chg && H >= e.chg.at) {
+          var cyOld = mapRestCycles(e, e.chg.at - 1);
+          nOld = cyOld.started;
+          nNew = cyAll.started - nOld;
+        }
+        mapRestNeed(e.menu, lvR, e.style).forEach(function (u) {
+          take(u.id, u.n * nOld);
         });
+        if (nNew > 0) {
+          mapRestNeed(e.chg.menu, lvR, e.style).forEach(function (u) {
+            take(u.id, u.n * nNew);
+          });
+        }
       }
     }
   });
@@ -4478,19 +4568,32 @@ function mapStockAt(H) {
 
 function mapStock(id) {
   var e = mapStockAt(mapCur())[id] || [];
-  var q = 0, c = 0, h = 0;
+  var q = 0, c = 0, h = 0, ql = 0;
   e.forEach(function (x) {
     q += x.q; c += x.c * x.q;
     h += (x.h || 0) * x.q;
+    ql += (x.ql || 0) * x.q;          // 品质也按数量加权平均
   });
   if (!q) return null;
-  return { q: q, c: c / q, h: h / q, n: e.length };
+  return { q: q, c: c / q, h: h / q, ql: ql / q, n: e.length };
 }
 /** 直接往【初始那一份】里记一笔。只有初始小时才让填。 */
-function mapAddCost(id, q, c, h, t) {
+/**
+ * 往仓库记一笔。
+ *
+ * ⚠️ `ql` 是这一批货的【品质】—— 和研究算出来的那个品质是两件事：
+ *      研究品质  = 我【能造出】多高品质的东西
+ *      货的品质  = 我【手上这一批】是多少品质（买来的、开局带的）
+ *    餐馆和零售看的是**手上这一批**，不是研究等级。
+ *    混成一个的话，"我买了一批 Q8 的奶酪"这件事在页面上完全没处表达。
+ */
+function mapAddCost(id, q, c, h, t, ql) {
   if (!(q > 0)) return;
   if (!MAP.cost[id]) MAP.cost[id] = { e: [] };
-  MAP.cost[id].e.push({ q: q, c: c, h: h || 0, t: t || 'make' });
+  var e = { q: q, c: c, h: h || 0, t: t || 'make' };
+  var n = Math.floor(Number(ql));
+  if (isFinite(n) && n > 0) e.ql = Math.min(MAP_Q_MAX, n);
+  MAP.cost[id].e.push(e);
   mapStockBust(); mapSave();
 }
 /*
@@ -4879,6 +4982,8 @@ function mapStartRun(k, itemId, kind, hours) {
   var r = mapRunPlan(it, lv, kind, hrs, ab);
   if (!r || !r.units) return;
   var ev = { t: 'run', h: H, k: k, item: itemId, kind: kind,
+             // 品质和工资、原料一个待遇：开工那一刻定死
+             ql: mapQualityAt(itemId, H),
              hours: hrs, units: r.units, step: r.step,
              uses: r.uses, wagePerH: mapWagePerHour(bd, lv),
              matC: 0, unitC: 0, unitH: 0 };
@@ -5312,9 +5417,51 @@ function mIn(val, ph, onset, w) {
 // ---------------------------------------------------------------------------
 // 画：列表
 // ---------------------------------------------------------------------------
+/*
+ * ⚠️ 这个模式几乎每次点击 / 改数都会整块重画（状态全是现算的，
+ *    所以重画是最简单也最不会错的做法）。代价是：
+ *    **滚动位置每次都被弹回顶上**，翻到下面改个数就得重新滚下来一次。
+ *
+ *    所以重画前后把滚动条的位置存下来再放回去。
+ *    ⚠️ 要在【DOM 装完之后】同步放回去 —— 放在 setTimeout 里的话，
+ *       浏览器会先画一帧在顶上，看起来就是"闪一下再跳回来"。
+ *
+ *    另外，正在打字的那个输入框也要保住焦点和光标位置：
+ *    重画一次焦点就没了，连续改两个数得点两次。
+ */
+function mapKeepScroll(fn) {
+  var body = document.querySelector('#mapbody');
+  var top = 0;
+  try { top = body ? body.scrollTop : 0; } catch (e) {}
+  // 记住焦点落在哪个输入框上（按它在 #mapwrap 里的序号找回来）
+  var act = null, selS = null, selE = null;
+  try {
+    var a = document.activeElement;
+    if (a && a.tagName === 'INPUT' && document.querySelector('#mapwrap').contains(a)) {
+      var all = document.querySelector('#mapwrap').querySelectorAll('input');
+      for (var i = 0; i < all.length; i++) if (all[i] === a) { act = i; break; }
+      if (a.type !== 'number') { selS = a.selectionStart; selE = a.selectionEnd; }
+    }
+  } catch (e) {}
+  fn();
+  try {
+    if (body && top) body.scrollTop = top;
+    if (act != null) {
+      var all2 = document.querySelector('#mapwrap').querySelectorAll('input');
+      if (all2[act]) {
+        all2[act].focus();
+        if (selS != null) { try { all2[act].setSelectionRange(selS, selE); } catch (e2) {} }
+      }
+    }
+  } catch (e) {}
+}
+
 function renderMap() {
   var box = document.querySelector('#mapwrap');
   if (!box) return;
+  mapKeepScroll(function () { renderMapInner(box); });
+}
+function renderMapInner(box) {
   // ⚠️ 仓库是按"当前小时 + 事件"算出来的，每次重画都得让缓存过期。
   //    不打掉的话，翻了时间仓库还停在上一次那一格 —— 而它看着完全正常。
   mapStockBust();
@@ -6392,6 +6539,15 @@ function renderMapStock(box) {
   var aqty = mIn('', '数量', function () {}, '84px');
   addr.appendChild(aqty);
   /*
+   * ⚠️ 品质要跟着【这一批货】走，不是跟着研究等级走。
+   *    研究等级说的是"我能造多高"，这一格说的是"我手上这批是多少"。
+   *    买 Q8 的奶酪、开局带一批 Q5 的牛奶 —— 没有这一格就没处表达，
+   *    而餐馆评分和零售速度看的正是手上这批的品质。
+   */
+  addr.appendChild(el('span', 'ml', 'Q'));
+  var aql = mIn('', '0', function () {}, '58px');
+  addr.appendChild(aql);
+  /*
    * 「购入」：初始小时是白送（那一格本来就随便捏），出了那一格是真的花钱 ——
    * 单价 × 数量从现金里扣，货进仓库。
    * 不扣钱的话，"买原料"就成了凭空变东西，整个现金模型都白做了。
@@ -6404,18 +6560,21 @@ function renderMapStock(box) {
     if (!isFinite(n) || n < 0) return;
     if (!isFinite(q) || q <= 0) q = 1;
     var id = Number(asel.value);
+    var ql = Math.max(0, Math.min(MAP_Q_MAX, Math.floor(Number(aql.value) || 0)));
     if (setupBuy) {
-      mapAddCost(id, q, n, 0, 'buy');
+      mapAddCost(id, q, n, 0, 'buy', ql);
     } else {
-      mapEv().push({ t: 'buy', h: mapCur(), item: id, units: q, price: n });
+      mapEv().push({ t: 'buy', h: mapCur(), item: id, units: q, price: n, ql: ql });
       mapSave();
     }
     renderMap();
   };
   addr.appendChild(abtn);
-  addr.appendChild(el('span', 'mu', setupBuy
-    ? '初始小时：直接填进去，不花钱。买来的东西不带时间（没占产能）。'
-    : '单价 × 数量从现金里扣。买来的东西不带时间（没占产能）。'));
+  addr.appendChild(el('span', 'mu', (setupBuy
+    ? '初始小时：直接填进去，不花钱。'
+    : '单价 × 数量从现金里扣。') +
+    '买来的东西不带时间（没占产能）。Q 是【这一批货】的品质（0~' + MAP_Q_MAX +
+    '），餐馆评分和零售速度看的就是它 —— 和研究等级是两件事。'));
   box.appendChild(addr);
 
   /*
@@ -6940,7 +7099,28 @@ function renderMapRest(box, x) {
   var rebuilding = mapRestRebuildAt(x.k, H);
   var style = live ? live.style : mapRestStyle(x.k, H);
   var dr = mapRestDraft(x.k);
-  var cfg = live || { menu: dr.menu, price: dr.price, staff: dr.staff, style: style };
+  /*
+   * ⚠️ 营业中【也能编】—— 编的是【下一轮】。
+   *    这一轮的料和工资开轮那一刻就扣掉了，当场生效会变成
+   *    "按 3 道菜扣了料、按 6 道菜算评分"，而两边各自看都对。
+   *
+   *    所以营业中的草稿默认从【当前生效的那一份】起步（或者已经排好的改动），
+   *    而不是从上次歇业时留下的那份 —— 不然一进来就像是要大改。
+   */
+  var eff = live ? mapRestCfgAt(live, H) : null;
+  if (live && !dr.synced) {
+    var src = live.chg || eff;
+    dr.menu = src.menu.slice(); dr.price = src.price; dr.staff = src.staff;
+    dr.synced = true;
+  }
+  if (!live && dr.synced) dr.synced = false;
+  var cfg = { menu: dr.menu, price: dr.price, staff: dr.staff, style: style };
+  var pend = live && live.chg;
+  // 草稿和"下一轮实际会用的那份"有没有差别
+  var draftDiff = live && (
+    dr.menu.slice().sort().join(',') !== (live.chg || eff).menu.slice().sort().join(',') ||
+    Number(dr.price) !== Number((live.chg || eff).price) ||
+    !!dr.staff !== !!(live.chg || eff).staff);
 
   /*
    * ⚠️⚠️ 这一句必须在最上面，而且不能收起来。
@@ -7044,7 +7224,7 @@ function renderMapRest(box, x) {
       if (q) bt.appendChild(el('span', 'pr', 'Q' + q));
       var have = mapStock(d.id);
       if (!have) bt.appendChild(el('span', 'pw', '仓库里没有'));
-      bt.disabled = !!live || !mapCanEdit();
+      bt.disabled = !mapCanEdit();
       bt.onclick = function () {
         var i = dr.menu.indexOf(d.id);
         if (i >= 0) dr.menu.splice(i, 1); else dr.menu.push(d.id);
@@ -7076,7 +7256,7 @@ function renderMapRest(box, x) {
       ? ('≤ $' + MAP_REST_SWEET + '：价格分拿满，上座率不扣')
       : ('⚠️ 超过 $' + MAP_REST_SWEET + '：评分【和】上座率【各扣一次】')));
   var stb = el('button', 'btn', cfg.staff ? '优质服务：开' : '优质服务：关');
-  stb.disabled = !!live || !mapCanEdit();
+  stb.disabled = !mapCanEdit();
   stb.onclick = function () { dr.staff = !dr.staff; mapSave(); renderMap(); };
   pb.appendChild(stb);
   pb.appendChild(el('span', 'mu',
@@ -7092,6 +7272,44 @@ function renderMapRest(box, x) {
   var seats = mapRestSeats(lv, style);
   var oc = mapRestOcc(rating, cfg.price, mapRestOtherSeats(x.k, H));
   var served = Math.min(seats, Math.floor(seats * oc.occ));
+
+  /*
+   * ⚠️ 营业中的时候，上面那些框改的是【下一轮】，
+   *    而下面这本账算的也是【按草稿这份配置】的一轮 ——
+   *    必须写清楚，不然会以为改完当场就变了。
+   */
+  if (live) {
+    var hint = el('div', 'mrestnext');
+    if (draftDiff) {
+      hint.appendChild(el('b', null, '⚠️ 上面改的是【下一轮】，这一轮不受影响'));
+      hint.appendChild(el('span', 'mu',
+        '这一轮的料和工资在开轮那一刻就扣掉了。' +
+        (eff ? '这一轮实际用的是 ' + eff.menu.length + ' 道菜、$' + eff.price +
+               '、' + (eff.staff ? '优质服务' : '普通服务') + '。' : '')));
+      var qb = el('button', 'btn pri', '排给下一轮（第 ' +
+        (st && st.cyc.cur ? st.cyc.cur.to : H) + ' 小时起）');
+      qb.disabled = !mapCanEdit() || !mapRestMenuOk(cfg.menu);
+      qb.onclick = function () { mapRestQueue(x.k, cfg); };
+      hint.appendChild(qb);
+      if (!mapRestMenuOk(cfg.menu)) {
+        hint.appendChild(el('span', 'mrw', '三组还没齐，排不了'));
+      }
+    } else if (pend) {
+      hint.appendChild(el('b', null,
+        '已排好：第 ' + live.chg.at + ' 小时起换成这一份'));
+      hint.appendChild(el('span', 'mu',
+        live.chg.menu.length + ' 道菜、$' + live.chg.price + '、' +
+        (live.chg.staff ? '优质服务' : '普通服务')));
+      var ub = el('button', 'btn', '撤掉');
+      ub.disabled = !mapCanEdit();
+      ub.onclick = function () { mapRestUnqueue(x.k); };
+      hint.appendChild(ub);
+    } else {
+      hint.appendChild(el('span', 'mu',
+        '营业中也能改菜单和价格 —— 改完点「排给下一轮」，这一轮不受影响。'));
+    }
+    box.appendChild(hint);
+  }
 
   var acc = el('div', 'mrestacct');
   var cost = 0, miss = [];
