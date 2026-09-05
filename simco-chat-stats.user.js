@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sim Companies 聊天存档 · 词频统计
 // @namespace    https://github.com/Hoshino-Saisho/simco-public
-// @version      1.15.0
+// @version      1.16.0
 // @description  聊天存档增强：① 词频统计（按小时/天/发送者/房间，支持排除词、强弱词三档、自定时区、图标码转名字、导出 CSV）② 销售办公室合同对比 —— 把多张单子并排摆开，比时利和利润率 ③ 餐馆优化器 —— 扫价格/服务/评分，画曲线和热力图，直接指出利润最高那一档
 // @author       —
 // @match        https://simco-chat.cc.cd/*
@@ -1496,7 +1496,7 @@
    * ⚠️ 查"到底该更新哪一边"的时候，两边的版本必须【同时】看得见 ——
    *    只报页面指纹的话，会漏掉"插件没更新"这一半。
    */
-  var SCS_VER = '1.15.0';
+  var SCS_VER = '1.16.0';
 
   var REST_FN = ['MAP', 'mapCur', 'mapListAt', 'mapLvNow', 'mapStock', 'mapStockQ',
                  'mapStockQFor', 'mapQBlend', 'MAP_Q_MAX',
@@ -1943,6 +1943,120 @@
     rows.forEach(function (r) { if (r.ok) best = r; });
     return best;
   }
+  /* ==================== 挑品质（勾选才开） ====================
+   *
+   * 「我这几档货成本差得很远，这一轮到底该用哪一档？」
+   *
+   * ⚠️ 高品质**不一定划算**：品质进的是评分，评分进的是上座率；
+   *    而料钱是直接扣的。一档贵十倍的货换来半分评分，多半是亏的。
+   *    这正是"挑"这个字的意思 —— 摊开一张表给你看不算挑。
+   *
+   * ⚠️⚠️ **但页面扣料是【从最高品质往下扣】的，改不了。**
+   *    所以这里挑出来的不是"这一轮该点哪个按钮"，而是
+   *    「**手里该留着哪一档**」—— 买/造的时候按它来，
+   *    别把用不上的高档货囤在这道菜上。
+   *    不说清楚的话，会照着它去页面上找一个根本不存在的选项。
+   */
+
+  /**
+   * 一道菜的候选配法：从第 j 档开始往下取 need 个。
+   *
+   * ⚠️ 候选不是"每一档单独用"，而是"从第 j 档起往下取" ——
+   *    最高那一档不够 need 个时，本来就得往下凑。
+   *    只列单档的话，那些"档不够量"的菜会一个候选都没有，
+   *    而它们恰恰是最需要挑的。
+   */
+  function restQOpts(d, id, n) {
+    var lots = d.lots[id];
+    if (!lots || !lots.length) return [];
+    var out = [], seen = {};
+    for (var j = 0; j < lots.length; j++) {
+      var b = RW('mapQBlend')(lots.slice(j), n);
+      if (b.got < n - 1e-9) break;             // 从这一档起往下都不够了
+      var key = Math.round(b.ql * 100);
+      if (seen[key]) continue;
+      seen[key] = 1;
+      out.push({ ql: b.ql, unit: b.c, cost: b.c * n, from: lots[j].ql });
+    }
+    return out;
+  }
+
+  /**
+   * 挑：总品质每多一点值不值那点料钱。
+   *
+   * 做法是一个背包 DP —— 评分只看【总品质】（各道菜的品质相加），
+   * 料钱也是相加，所以"给定总品质，最少要花多少料钱"可以逐道菜推。
+   *
+   * ⚠️ 不能对每道菜单独挑。单独挑的话每道都会选"性价比最高"的那一档，
+   *    而真正的取舍是**整张菜单一起**跨过评分那几个坎 ——
+   *    差半分评分可能一分钱都不值，也可能值好几万。
+   *
+   * 总品质按 0.1 一档离散化：16 道 × 12 分 = 192，最多 1921 个状态，
+   * 逐道菜推一遍就完事，比穷举菜单便宜得多。
+   */
+  var RESTQ_STEP = 10;                    // 总品质 ×10 取整
+  function restQPlan(d, m, price, staff) {
+    var ids = m.menu, i;
+    var opts = [];
+    for (i = 0; i < ids.length; i++) {
+      var o = restQOpts(d, ids[i], m.need[ids[i]]);
+      if (!o.length) {
+        return { err: '「' + RW('mapName')(ids[i]) + '」仓里的量不够这一轮吃，挑不了。' };
+      }
+      opts.push(o);
+    }
+    /*
+     * chain[i] = 前 i 道菜推完之后，「总品质 → 最省的那条路」。
+     * ⚠️ 路径要边推边记（prev + pick），不能只留最后一层再倒推 ——
+     *    只留最后一层的话，回溯时得把 DP 再推一遍，
+     *    两遍之间但凡有一点不一致（比如同价位取谁），
+     *    报出来的配法就和报出来的钱对不上，而两边各自看都对。
+     */
+    var chain = [{ 0: { cost: 0, prev: null, pick: null } }];
+    for (i = 0; i < ids.length; i++) {
+      var nx = {};
+      Object.keys(chain[i]).forEach(function (k) {
+        var cur = chain[i][k];
+        opts[i].forEach(function (op) {
+          var nk = Number(k) + Math.round(op.ql * RESTQ_STEP);
+          var c = cur.cost + op.cost;
+          if (!nx[nk] || c < nx[nk].cost) {
+            nx[nk] = { cost: c, prev: Number(k), pick: op };
+          }
+        });
+      });
+      chain.push(nx);
+    }
+    var last = chain[ids.length];
+    var wage = RW('mapRestWage')(d.lv, d.style, staff);
+    var best = null, all = [];
+    Object.keys(last).forEach(function (k) {
+      var qsum = Number(k) / RESTQ_STEP;
+      var rt = RW('mapRestRating')({ menu: ids, price: price, staff: staff,
+                                     style: d.style, qsum: qsum });
+      var oc = RW('mapRestOcc')(rt.r, price, d.other);
+      var served = Math.min(d.seats, Math.floor(d.seats * oc.occ));
+      var row = { qsum: qsum, cost: last[k].cost, rating: rt.r, occ: oc.occ,
+                  served: served, key: Number(k),
+                  profit: served * price - last[k].cost - wage };
+      all.push(row);
+      if (!best || row.profit > best.profit) best = row;
+    });
+    if (!best) return { err: '一种配得起来的品质组合都没有。' };
+    var picks = [], k2 = best.key;
+    for (i = ids.length; i > 0; i--) {
+      var node = chain[i][k2];
+      picks.unshift({ id: ids[i - 1], opt: node.pick });
+      k2 = node.prev;
+    }
+    all.sort(function (a, b) { return a.qsum - b.qsum; });
+    return { best: best, picks: picks, all: all, opts: opts };
+  }
+  /** 把一份挑好的品质配法，装回 restOne 认的那种 m。 */
+  function restQAsM(m, plan) {
+    return { menu: m.menu, need: m.need, cost: plan.best.cost,
+             qsum: plan.best.qsum, miss: [], short: [] };
+  }
   /** 找利润最高的那一个。 */
   function restBest(rows) {
     var b = null;
@@ -2232,59 +2346,102 @@
   }
 
   /**
-   * ---- 勾选①：按品质分档摊开 ----
+   * ---- 勾选①：挑品质（按不同品质的成本算） ----
    *
-   * 每道菜列出仓里的分档、这一轮吃掉几个、**实际拿到的品质**，
-   * 再把「整仓平均」并排摆出来。
-   *
-   * ⚠️ 摆两列是这一块的全部意义：仓里 100 个 Q8 + 1 万个 Q0 时，
-   *    整仓平均是 0.08，而这一轮只吃 60 个的话拿到的是**纯 Q8**。
-   *    只给一个数的话，看的人没法知道自己看的是哪一个。
+   * ⚠️ 上一版这里只是**摊开一张表**给你看。那不是挑。
+   *    高品质不一定划算：品质进的是评分、评分进的是上座率，
+   *    而料钱是当场扣的 —— 一档贵十倍的货换来半分评分多半是亏的。
+   *    现在真的挑：每道菜该用哪一档，整张菜单一起算。
    */
-  function restQPanel(box, d) {
-    box.appendChild(el('div', 'sub',
-      '仓里每一批货各有各的品质，用料时【从高往低取】，' +
-      '最高那一档不够了才往下一档凑、按数量平均。\n' +
-      '所以「这一轮拿到的品质」和「整仓平均」经常不是一个数 —— 下面并排列出来。'));
+  function restQPanel(box, d, ov, hasP) {
+    var price = hasP ? Number(REST.price) : 96;
+    var staff = !!d.staff;
+
+    /*
+     * ⚠️⚠️ 这句必须在最前面，而且不能省。
+     *    页面（和游戏）扣料是**从最高品质往下扣**的，改不了 ——
+     *    所以下面挑出来的不是"这一轮该点哪个按钮"，
+     *    而是「**手里该留着哪一档**」：买 / 造的时候按它来。
+     *    不说的话，会照着它去页面上找一个根本不存在的选项。
+     */
+    box.appendChild(el('div', 'warn',
+      '⚠️ 用料是【从最高品质往下扣】的，这条改不了。\n' +
+      '所以下面挑出来的是「**手里该留着哪一档**」（买 / 造的时候照它来），' +
+      '不是"这一轮点哪个按钮"。\n' +
+      '把用不上的高档货囤在某道菜上，等于白花那份料钱。'));
+
+    var plan = restQPlan(d, d.cur, price, staff);
+    if (plan.err) { box.appendChild(el('div', 'warn', plan.err)); return; }
+
+    var b = plan.best;
+    var bt = el('div', 'best');
+    bt.appendChild(el('b', null, '最划算的品质配法：'));
+    bt.appendChild(document.createTextNode(
+      '　总品质 ' + (Math.round(b.qsum * 10) / 10) +
+      '　评分 ' + (Math.round(b.rating * 100) / 100) +
+      '　上座率 ' + (b.occ * 100).toFixed(1) + '%' +
+      '　料 $' + cmpMoney(b.cost) +
+      '　这一轮 $' + cmpMoney(b.profit) +
+      '（按 $' + price + ' 算）'));
+    box.appendChild(bt);
+
+    /*
+     * ⚠️ 一定要和【两个极端】比。
+     *    只报一个"最划算"的话，没法知道它到底省下了什么 ——
+     *    而这一整块功能的价值全在那个差额上。
+     */
+    var ends = [
+      { n: '全用最高品质', row: plan.all[plan.all.length - 1] },
+      { n: '全用最便宜的', row: plan.all[0] },
+    ];
+    ends.forEach(function (e) {
+      if (!e.row || e.row.key === b.key) return;
+      var one = el('div', 'sub');
+      one.appendChild(el('b', null, '对比 · ' + e.n + '：'));
+      one.appendChild(document.createTextNode(
+        '　总品质 ' + (Math.round(e.row.qsum * 10) / 10) +
+        '　评分 ' + (Math.round(e.row.rating * 100) / 100) +
+        '　料 $' + cmpMoney(e.row.cost) +
+        '　这一轮 $' + cmpMoney(e.row.profit) +
+        '　→ 比最划算那份少赚 $' + cmpMoney(b.profit - e.row.profit)));
+      box.appendChild(one);
+    });
+
+    // ---- 每道菜挑了哪一档，以及它有哪些档可挑 ----
     var t = el('table', 'qt');
     var hr = el('tr');
-    ['菜', '这一轮吃', '实际品质', '整仓平均', '实际均价', '分档（品质×数量）']
+    ['菜', '这一轮吃', '挑中的档', '单价', '这道菜的料钱', '仓里有的档（品质 → 单价）']
       .forEach(function (h) { hr.appendChild(el('th', null, h)); });
     t.appendChild(hr);
-    var diff = 0;
-    d.menu.forEach(function (id) {
-      var n = d.cur.need[id] || 0;
-      var lots = d.lots[id];
-      var b = lots && lots.length ? RW('mapQBlend')(lots, n)
-                                  : { ql: null, c: null, got: 0, short: true };
-      var whole = 0, wq = 0, wc = 0;
-      (lots || []).forEach(function (L) { whole += L.q; wq += L.ql * L.q; wc += L.c * L.q; });
-      var avg = whole > 0 ? wq / whole : null;
+    plan.picks.forEach(function (pk, i) {
+      var n = d.cur.need[pk.id] || 0;
       var r = el('tr');
-      r.appendChild(el('td', null, RW('mapName')(id)));
+      r.appendChild(el('td', null, RW('mapName')(pk.id)));
       r.appendChild(el('td', null, n.toLocaleString()));
-      r.appendChild(el('td', null, b.ql == null ? '仓里没有'
-        : ('Q' + (Math.round(b.ql * 100) / 100))));
-      r.appendChild(el('td', null, avg == null ? '—'
-        : ('Q' + (Math.round(avg * 100) / 100))));
-      r.appendChild(el('td', null, b.c == null ? '—' : ('$' + cmpMoney(b.c))));
-      r.appendChild(el('td', null, (lots || []).length
-        ? lots.map(function (L) {
-            return 'Q' + L.ql + '×' + Math.round(L.q).toLocaleString();
-          }).join('　')
-        : '—'));
-      if (b.ql != null && avg != null && Math.abs(b.ql - avg) > 1e-6) {
+      r.appendChild(el('td', null, 'Q' + (Math.round(pk.opt.ql * 100) / 100)));
+      r.appendChild(el('td', null, '$' + cmpMoney(pk.opt.unit)));
+      r.appendChild(el('td', null, '$' + cmpMoney(pk.opt.cost)));
+      r.appendChild(el('td', null, plan.opts[i].map(function (o) {
+        return 'Q' + (Math.round(o.ql * 100) / 100) + '→$' + cmpMoney(o.unit);
+      }).join('　')));
+      // 没挑最高的那一档 —— 这一行就是"高品质不划算"的实例，标出来
+      if (plan.opts[i].length > 1 && pk.opt.ql < plan.opts[i][0].ql - 1e-9) {
         r.className = 'hit';
-        diff++;
       }
-      if (b.short) r.className = 'mrw';
       t.appendChild(r);
     });
     box.appendChild(t);
-    box.appendChild(el('div', 'sub', diff
-      ? ('有 ' + diff + ' 道菜的两个数【不一样】（标出来了）—— ' +
-         '评分和成本用的都是左边那个「实际品质」，因为仓库真扣料时就是这么扣的。')
-      : '这些菜仓里都只有一个品质档，两个数一样 —— 分档在这一局暂时不起作用。'));
+
+    var down = plan.picks.filter(function (pk, i) {
+      return plan.opts[i].length > 1 && pk.opt.ql < plan.opts[i][0].ql - 1e-9;
+    }).length;
+    box.appendChild(el('div', 'sub', down
+      ? ('标出来那 ' + down + ' 道菜【最高的那一档不划算】—— ' +
+         '多出来的品质换来的评分，不够抵那一档多花的料钱。')
+      : '每道菜都是最高那一档最划算 —— 这一局里高品质确实值那个价。'));
+    box.appendChild(el('div', 'sub',
+      '⚠️ 这一屏按 $' + price + ' 算的。价格换了，"多一分评分值多少钱"就变了，' +
+      '挑法也会跟着变 —— 把价格那一格填上可以定死它。'));
   }
 
   /**
@@ -2588,7 +2745,7 @@
      *    做成开关的话，关着的时候这一屏会和页面对不上，而两边各自看都对。
      */
     var opt = el('div', 'free');
-    opt.appendChild(restChk('按品质分档摊开', REST.showQ, function (v) {
+    opt.appendChild(restChk('挑品质（按各档的成本算）', REST.showQ, function (v) {
       REST.showQ = v; restRender();
     }));
     opt.appendChild(restChk('连菜单一起挑（只在有料的菜里）', REST.optMenu, function (v) {
@@ -2596,7 +2753,7 @@
     }));
     box.appendChild(opt);
 
-    if (REST.showQ) restQPanel(box, d);
+    if (REST.showQ) restQPanel(box, d, ov, hasP);
     if (REST.optMenu) restMenuPanel(box, d, ratingOv, hasP);
 
     /*
