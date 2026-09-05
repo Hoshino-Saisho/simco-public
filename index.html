@@ -1404,7 +1404,7 @@ var DATA = './data';
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = '67541f855761';
+var PAGE_BUILD = '043c2e187901';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -3031,6 +3031,8 @@ var MAP = (function () {
             // adminPer 管理费分母：null = 用默认的 MAP_ADMIN_PER
             adminPer: null, econ: MAP_ECON_BASE, sat: {}, price: {},
             rdraft: {}, rtraffic: null,
+            // q[产品id] = 这个产品研究到几级（每个产品各自独立）
+            q: {},
             cuPrice: null, pick: '', ev: [],
             sel: null, sell: null, item: null };
   try {
@@ -3060,6 +3062,7 @@ var MAP = (function () {
       if (o.sat && typeof o.sat === 'object') d.sat = o.sat;
       if (o.price && typeof o.price === 'object') d.price = o.price;
       if (o.rdraft && typeof o.rdraft === 'object') d.rdraft = o.rdraft;
+      if (o.q && typeof o.q === 'object') d.q = o.q;
       d.rtraffic = (Number(o.rtraffic) > 0) ? Number(o.rtraffic) : null;
       d.cuPrice = (o.cuPrice == null) ? null : Number(o.cuPrice);
       if (typeof o.pick === 'string') d.pick = o.pick;
@@ -3102,7 +3105,7 @@ function mapSave() {
         t0: MAP.t0, cur: MAP.cur, anchor: MAP.anchor, setupH: MAP.setupH,
         cash0: MAP.cash0, sb0: MAP.sb0, plv: MAP.plv,
         adminPer: MAP.adminPer, econ: MAP.econ, sat: MAP.sat, price: MAP.price,
-        rdraft: MAP.rdraft, rtraffic: MAP.rtraffic,
+        rdraft: MAP.rdraft, rtraffic: MAP.rtraffic, q: MAP.q,
         cuPrice: MAP.cuPrice, pick: MAP.pick, ev: MAP.ev }));
   } catch (e) {}
 }
@@ -3206,6 +3209,7 @@ function mapReset() {
   MAP.anchor = 0; MAP.cur = 0; MAP.setupH = 0;
   MAP.cash0 = MAP_CASH0; MAP.sb0 = 0; MAP.plv = 1; MAP.cuPrice = null;
   MAP.econ = MAP_ECON_BASE; MAP.sat = {}; MAP.price = {}; MAP.rdraft = {};
+  MAP.q = {};
   /*
    * ⚠️ MAP.adminPer 故意【不清】—— 它是"游戏是这么算的"，不是"这一局这么摆的"。
    *    工资那个口子清掉没事（默认值已经核实是对的，清了就回到对的）；
@@ -3825,13 +3829,26 @@ function mapQNext(p) {
   return null;
 }
 /**
- * 这个资源在第 H 小时【能造出】的品质等级（研究算出来的）。
- * 自己开工造东西时，货的品质就取它。
+ * 这个产品【能造出】的品质等级。
+ *
+ * ⚠️⚠️ 这里改过一次，而且是个真 bug：
+ *
+ *   我原来写的是「按研究线算」—— 一条线出了 12 个专利，
+ *   那条线**覆盖的十几个产品品质全部一起跳到 Q1**。
+ *   实际上**品质是每个产品各自独立的**：研究只提升被研究的那一个。
+ *
+ *   于是原来那版会凭空给你一堆没研究过的高品质货，
+ *   而它们在餐馆评分和零售速度里照样起作用 —— 全盘偏高，
+ *   **每个数看着都规规矩矩**。
+ *
+ *   现在：每个产品一个数，存在 MAP.q[id] 里，只在初始小时能填。
+ *   「哪些产品能被研究、投多少研究点升到几级」那套映射你说先不填，
+ *   所以这里**不去猜** —— 没填就是 0。
+ *   猜一个映射比留空更糟：它会看起来像算好的。
  */
 function mapQualityAt(id, H) {
-  var L = mapLineOf(id);
-  if (!L) return 0;
-  return mapQFromPatents(mapPatentsAt(L.k, H === undefined ? mapCur() : H));
+  var v = Math.floor(Number((MAP.q || {})[id]));
+  return (isFinite(v) && v > 0) ? Math.min(MAP_Q_MAX, v) : 0;
 }
 /**
  * 【手上这一批货】的品质。
@@ -3844,9 +3861,55 @@ function mapQualityAt(id, H) {
  *
  * 仓库里没有就回落到研究等级 —— 那是"如果现在造一批会是多少"。
  */
-function mapStockQ(id) {
+/**
+ * 【取 n 个】会拿到什么品质。
+ *
+ * 从最高的那一档开始拿，够就够了；不够才往下一档，
+ * 拿到的是那几档**按数量的加权平均**。
+ *
+ * ⚠️ 这和"整仓平均"是两回事：仓里有 100 个 Q8 + 10000 个 Q0 时，
+ *    整仓平均是 0.08，而拿 50 个是**纯 Q8**。
+ *    餐馆和零售要的是后者 —— 用前者的话，
+ *    "我专门备了一批高品质料"这件事在结果里完全消失。
+ */
+/**
+ * 从最高那一档往下取 n 个，报【取到的那些】的加权平均品质和均价。
+ *
+ * ⚠️ 单独拎成一个函数，是因为它有【两个】调用方：
+ *      页面自己的 mapStockQFor —— 一次问一个产品
+ *      插件的批量试算       —— 几万种菜单配法，不能每次都去走一遍事件流
+ *    抄一份出去的话，"取料从高往低"这条规则就写了两遍，
+ *    两边迟早不一样 —— 而且**各自看都对**。
+ *
+ * ⚠️ 品质和成本走的是**同一批 lots**：仓库真扣料时就是这么扣的。
+ *    分开算会出现"按最高品质给评分、按整仓均价算成本"这种四不像。
+ */
+function mapQBlend(lots, n) {
+  var need = Number(n);
+  var left = (isFinite(need) && need > 0) ? need : 0;
+  var ql = 0, c = 0, used = 0;
+  var arr = lots || [];
+  for (var i = 0; i < arr.length && left > 1e-9; i++) {
+    var d = Math.min(arr[i].q, left);
+    ql += (arr[i].ql || 0) * d;
+    c += (arr[i].c || 0) * d;
+    used += d; left -= d;
+  }
+  // 仓里不够 n 个：按【实际能拿到的那些】算，别拿 0 去补
+  return { ql: used > 0 ? ql / used : null, c: used > 0 ? c / used : null,
+           got: used, short: left > 1e-9 };
+}
+function mapStockQFor(id, n) {
   var g = mapStock(id);
   if (!g) return mapQualityAt(id);
+  var b = mapQBlend(g.lots, n);
+  return (b.got > 0) ? b.ql : (g.ql || 0);
+}
+/** 不指定数量时的口径：整仓平均。仓里没有就回落到"能造多高"。 */
+function mapStockQ(id, n) {
+  var g = mapStock(id);
+  if (!g) return mapQualityAt(id);
+  if (n !== undefined) return mapStockQFor(id, n);
   return g.ql || 0;
 }
 
@@ -3972,9 +4035,34 @@ function mapRestWage(lv, style, staff) {
  */
 function mapRestRating(o) {
   if (!mapRestMenuOk(o.menu)) return { r: 0, parts: [], empty: true };
-  // ⚠️ 用【仓库里这批货】的品质 —— 餐馆吃的是手上的料，不是研究等级
+  /*
+   * ⚠️ 用【这一轮真的要用掉那么多】时能拿到的品质，不是整仓平均。
+   *
+   *   仓里 100 个 Q8 + 10000 个 Q0：整仓平均 0.08，
+   *   而这一轮只吃 60 个的话，拿到的是**纯 Q8**。
+   *   用整仓平均的话，"专门备一批高品质料"这件事在评分里完全消失。
+   *
+   *   need 由调用方传（一轮的用量表）。没传就退回整仓平均 ——
+   *   那只用在"还没定等级/装修、算不出用量"的时候。
+   */
   var qs = 0;
-  o.menu.forEach(function (id) { qs += mapStockQ(id); });
+  if (o.qsum != null && isFinite(Number(o.qsum))) {
+    /*
+     * 调用方已经按这一轮的用量算好了总品质（插件批量试算走这条）。
+     *
+     * ⚠️ 之所以留这个口子：mapStockQFor 每问一次都要重走一遍事件流，
+     *    插件要试几万种菜单配法，照那样算能跑到分钟级。
+     *    但**算法不许它自己抄一份** —— 它算 qsum 用的是页面导出的
+     *    同一个 mapQBlend，这里只是把结果接进来。
+     */
+    qs = Number(o.qsum);
+  } else {
+    var needMap = o.need || null;
+    o.menu.forEach(function (id) {
+      qs += (needMap && needMap[id] > 0) ? mapStockQFor(id, needMap[id])
+                                         : mapStockQ(id);
+    });
+  }
   var q = o.menu.length ? qs / o.menu.length : 0;
   var price = Number(o.price) || 0;
   var parts = [
@@ -4018,10 +4106,35 @@ function mapRestOtherCap() {
   [1.5, 2.5, 0.5, 0.5, 1].forEach(function (v) { n += v; });
   return n;
 }
-/** 要把评分顶到 10，总品质至少要多少。 */
-function mapRestQNeed(o) {
-  var rt = mapRestRating(o);
-  if (rt.empty) return null;
+/**
+ * 按【这一轮真的要吃掉那么多】算的评分。
+ *
+ * ⚠️ 这个包装存在的唯一理由：**算评分之前必须先算用量**。
+ *    少了这一步，品质会悄悄退回「整仓平均」——
+ *    仓里 100 个 Q12 压着 100 万个 Q0 时，两个口径差四个数量级。
+ *
+ *    而漏了它【不会报任何错】，只会安静地给一个偏低的评分。
+ *    界面上那一屏原来就漏了：**同一栋楼，面板显示一个评分、算账用另一个**，
+ *    插件（跟着算账那条走）又是第三个说法 —— 三处两个数，
+ *    而每一处单看都对。
+ *
+ *    所以现在不许再有第二个"自己拼 need 再调 mapRestRating"的地方：
+ *    要评分就调这个。
+ */
+function mapRestRatingAt(cfg, lv, style) {
+  var needMap = {};
+  mapRestNeed(cfg.menu, lv, style).forEach(function (u) { needMap[u.id] = u.n; });
+  return mapRestRating({ menu: cfg.menu, price: cfg.price, staff: cfg.staff,
+                         style: style, need: needMap });
+}
+/**
+ * 要把评分顶到 10，总品质至少要多少。
+ *
+ * ⚠️ 收的是【已经算好的那份评分】，不是配置 —— 原来收配置、自己再算一遍，
+ *    于是它算的那一遍没带用量，和屏幕上显示的评分不是一个口径。
+ */
+function mapRestQNeed(rt) {
+  if (!rt || rt.empty) return null;
   var others = rt.raw - (rt.qsum / MAP_Q_MAX * 3);
   return Math.max(0, (MAP_REST_RATING_MAX - others) / 3 * MAP_Q_MAX);
 }
@@ -4035,10 +4148,17 @@ function mapRestQNeed(o) {
  */
 function mapRestOcc(rating, price, otherSeats) {
   var pricePenalty = Math.max(0, (Number(price) || 0) - MAP_REST_SWEET) / 500;
+  /*
+   * ⚠️ 这里原来还有第 4 个参数 trafficOv（试算用的客流覆盖值），
+   *    只有插件那边扫客流轴时会传。那一轴已经拆掉了，参数也一并删掉 ——
+   *    **留一个没人传的参数最坑**：它看着还是条活规则，
+   *    下一个人会照着它写新调用，而它其实从来没被验过。
+   */
   var traffic = Math.max(1, Number(MAP.rtraffic) || MAP_REST_TRAFFIC);
   var comp = Math.max(0, Math.min(0.55, (otherSeats || 0) / traffic));
   var occ = 0.08 + rating / 10 * 0.82 - pricePenalty - comp * 0.25;
-  return { occ: Math.max(0, Math.min(1, occ)), pen: pricePenalty, comp: comp };
+  return { occ: Math.max(0, Math.min(1, occ)), pen: pricePenalty, comp: comp,
+           traffic: traffic };
 }
 
 /* ---- 事件：一次「开着的餐馆」，每 12 小时结算一轮 ----
@@ -4086,6 +4206,29 @@ function mapRestStops(k, H) {
  *    数到 H 为止的话，今天关一次门，会把上个月那几轮已经收进账的营业额
  *    追溯着打个折 —— 历史被改了，而屏幕上不会有任何一处说发生过什么。
  */
+/**
+ * 歇业惩罚：**这一笔开张之前**已经歇过几次业。
+ *
+ * ⚠️ 只数到 `before` 为止，不数到"现在"为止。
+ *    数到现在的话，今天关一次门会把上个月那几轮【已经收进账的营业额】
+ *    追溯着打折 —— 历史被改了，而屏幕上不会有任何一处说发生过什么。
+ *
+ * ⚠️ 拎成独立函数是因为它有【两个】调用方：页面自己算账，
+ *    和插件的优化器。插件原来整条漏了这一项，于是它报出来的评分
+ *    **是这家店永远达不到的那个数** —— 歇过一次业就差 12.5%，
+ *    而两边各自看都对：插件说 8.96，页面说 7.84，谁也不说另一个错。
+ */
+function mapRestStops(k, before) {
+  var n = 0;
+  mapEvOf(k, 'rest').forEach(function (o) {
+    if (o.off != null && o.off <= before) n++;
+  });
+  return n;
+}
+/** 歇业衰减系数。评分要乘上它才是真正进上座率的那个数。 */
+function mapRestDecay(k, before) {
+  return Math.pow(MAP_REST_STOP_DECAY, mapRestStops(k, before));
+}
 function mapRestAcct(x, e, H) {
   var lv = mapLvAt(x, H);
   var cyc = mapRestCycles(e, H);
@@ -4093,12 +4236,9 @@ function mapRestAcct(x, e, H) {
   var need = mapRestNeed(cfg.menu, lv, e.style);
   var seats = mapRestSeats(lv, e.style);
   var wage = mapRestWage(lv, e.style, cfg.staff);
-  var rt = mapRestRating(cfg);
-  var stops = 0;
-  mapEvOf(x.k, 'rest').forEach(function (o) {
-    if (o !== e && o.off != null && o.off <= e.h) stops++;
-  });
-  var decay = Math.pow(MAP_REST_STOP_DECAY, stops);
+  var rt = mapRestRatingAt(cfg, lv, e.style);
+  var stops = mapRestStops(x.k, e.h);
+  var decay = mapRestDecay(x.k, e.h);
   var rating = rt.r * decay;
   var oc = mapRestOcc(rating, cfg.price, mapRestOtherSeats(x.k, H));
   var served = Math.min(seats, Math.floor(seats * oc.occ));
@@ -4507,10 +4647,27 @@ function mapStockAt(H) {
     if (!m[id]) m[id] = [];
     m[id].push({ q: q, c: c || 0, h: h || 0, ql: Number(ql) || 0 });
   }
+  /*
+   * ⚠️ 取料按【品质从高到低】，不是先进先出。
+   *
+   *   不同品质的货是**分开放着的**，不是一进仓就搅成一个平均值。
+   *   用的时候先用最好的；最好的那一档不够了，才往下一档拿 ——
+   *   这时候拿到的品质才是那几档按数量的加权平均。
+   *
+   *   一进仓就平均的话，"我买了 100 个 Q8 备着做高品质菜" 这件事
+   *   会被同仓库里 10000 个 Q0 直接稀释掉，而屏幕上只剩一个 Q0.08。
+   *
+   * ⚠️ 成本也跟着**同一批**走。取料按品质排、算钱按先进先出的话，
+   *    会同时成立"我用了 Q8 的料"和"我付了 Q0 的钱"—— 两边各自看都对。
+   */
+  function sortQ(id) {
+    if (m[id]) m[id].sort(function (a, b) { return (b.ql || 0) - (a.ql || 0); });
+  }
   function take(id, q) {
     if (!(q > 0) || !m[id]) return;
+    sortQ(id);
     var left = q;
-    // 先进先出地扣。扣完还欠着也不报错 —— 缺料的提示在开工那一步就给过了
+    // 扣完还欠着也不报错 —— 缺料的提示在开工那一步就给过了
     for (var i = 0; i < m[id].length && left > 0; i++) {
       var d = Math.min(m[id][i].q, left);
       m[id][i].q -= d; left -= d;
@@ -4574,15 +4731,26 @@ function mapStockAt(H) {
 }
 
 function mapStock(id) {
-  var e = mapStockAt(mapCur())[id] || [];
+  var e = (mapStockAt(mapCur())[id] || []).slice()
+    .sort(function (a, b) { return (b.ql || 0) - (a.ql || 0); });
   var q = 0, c = 0, h = 0, ql = 0;
   e.forEach(function (x) {
     q += x.q; c += x.c * x.q;
     h += (x.h || 0) * x.q;
-    ql += (x.ql || 0) * x.q;          // 品质也按数量加权平均
+    ql += (x.ql || 0) * x.q;
   });
   if (!q) return null;
-  return { q: q, c: c / q, h: h / q, ql: ql / q, n: e.length };
+  /*
+   * ⚠️ `ql` 是【整仓的加权平均】—— 只适合摆在"这一格总共什么成色"那种地方。
+   *    真要用料的时候看 mapStockQFor(id, n)：那是"取 n 个会拿到什么品质"，
+   *    从高往低取，够的话就是纯的最高档。两个数【经常不一样】。
+   *
+   * `lots` 是按品质从高到低分好的档，插件那边算不同配法要用。
+   */
+  return { q: q, c: c / q, h: h / q, ql: ql / q, n: e.length,
+           lots: e.map(function (x) {
+             return { q: x.q, ql: x.ql || 0, c: x.c || 0 };
+           }) };
 }
 /** 直接往【初始那一份】里记一笔。只有初始小时才让填。 */
 /**
@@ -7049,6 +7217,53 @@ function renderMapResearch(box) {
   card.appendChild(head);
   if (!MAP.resOpen) { box.appendChild(card); return; }
 
+  /*
+   * ⚠️ 这一块以前是「按研究线给品质」—— 那是错的，已经拆了。
+   *    品质是【每个产品各自独立】的，研究只提升被研究的那一个。
+   *    「哪些产品能被研究、投多少点升到几级」那套映射还没有，
+   *    所以这里【不猜】：下面那张表只是让你把已知的品质填进去。
+   *    猜一个映射比留空更糟 —— 它会看起来像算好的。
+   */
+  card.appendChild(el('div', 'mu2',
+    '⚠️ 品质是【每个产品各自独立】的 —— 研究只提升被研究的那一个。\n' +
+    '原来这里按研究线给品质（一条线升级，它覆盖的十几个产品一起跳），' +
+    '那是错的，已经拆掉。\n' +
+    '「哪些产品能研究、投多少点升几级」那套映射还没有，所以下面这张表' +
+    '**手填**：填了才有，没填就是 0。'));
+
+  var qb = el('div', 'mexscroll');
+  var qt = el('table', 'mext');
+  var qh = el('tr');
+  ['产品', '研究到几级', '仓库里这批'].forEach(function (t) {
+    qh.appendChild(el('th', null, t));
+  });
+  qt.appendChild(qh);
+  var qIds = Object.keys(MAP.q || {}).map(Number).filter(function (i) { return i; });
+  MAP_REST_MENU.forEach(function (dd) {
+    if (qIds.indexOf(dd.id) < 0) qIds.push(dd.id);
+  });
+  qIds.forEach(function (id) {
+    var tr = el('tr');
+    tr.appendChild(el('td', null, mapName(id)));
+    var td = el('td');
+    td.appendChild(mIn((MAP.q || {})[id] == null ? '' : MAP.q[id], '0',
+      function (v) {
+        MAP.q = MAP.q || {};
+        var n = Math.floor(Number(v));
+        if (v === '' || !isFinite(n) || n <= 0) delete MAP.q[id];
+        else MAP.q[id] = Math.min(MAP_Q_MAX, n);
+        mapSave(); renderMap();
+      }, '64px'));
+    tr.appendChild(td);
+    var g = mapStock(id);
+    tr.appendChild(el('td', 'mu', g
+      ? ('Q' + (Math.round(g.ql * 100) / 100) + '（' + g.lots.length + ' 档）')
+      : '仓库里没有'));
+    qt.appendChild(tr);
+  });
+  qb.appendChild(qt);
+  card.appendChild(qb);
+
   var cto = mapExecPoints().fin.sc;
   card.appendChild(el('div', 'mu2',
     '每 1 点研究有 ' +
@@ -7085,7 +7300,11 @@ function renderMapResearch(box) {
   card.appendChild(el('div', 'mu2',
     '品质影响什么：零售速度和售价（qf = 品质 ÷ 12）、交易所撮合优先级。' +
     '\n采矿类那 9 样影响的是产量，但那条走的是【丰度】，这里不重复乘。' +
-    '\n圣诞树是唯一的累加器：每级 +' + MAP_ACC_PER_Q + '% 生产速度。'));
+    '\n圣诞树是唯一的累加器：每级 +' + MAP_ACC_PER_Q + '% 生产速度。' +
+    '\n\n⚠️ 仓库里【不同品质的货是分开放的】，不是一进仓就搅成一个平均值。' +
+    '\n用的时候先用最好的；最好的那一档不够了，才往下一档拿 —— ' +
+    '这时候拿到的才是那几档按数量的加权平均。' +
+    '\n所以"仓里 100 个 Q8 + 10000 个 Q0"，这一轮只吃 60 个的话，拿到的是纯 Q8。'));
   box.appendChild(card);
 }
 
@@ -7273,7 +7492,8 @@ function renderMapRest(box, x) {
   // ---- 这一轮的账 ----
   var need = mapRestNeed(cfg.menu, lv, style);
   var wage = mapRestWage(lv, style, cfg.staff);
-  var rt = mapRestRating(cfg);
+  // ⚠️ 走 mapRestRatingAt，不是裸的 mapRestRating —— 见那个函数上面那段
+  var rt = mapRestRatingAt(cfg, lv, style);
   var stops = st ? st.stops : 0;
   var rating = rt.r * Math.pow(MAP_REST_STOP_DECAY, stops);
   var seats = mapRestSeats(lv, style);
@@ -7332,7 +7552,7 @@ function renderMapRest(box, x) {
       rt.empty ? '三个分组各要至少一道菜，现在评分是 0'
         : ((rt.capped
             ? ('七项原始 ' + (Math.round(rt.raw * 100) / 100) + '，已经顶到 10 了')
-            : ('还差 ' + (Math.round((mapRestQNeed(cfg) - rt.qsum) * 10) / 10) +
+            : ('还差 ' + (Math.round((mapRestQNeed(rt) - rt.qsum) * 10) / 10) +
                ' 点总品质才能顶到 10（现在总品质 ' +
                mnum(Math.round(rt.qsum * 10) / 10) + '）')) +
            (stops ? ('　歇业过 ' + stops + ' 次，×' +
@@ -11820,12 +12040,22 @@ try {
     get MAP() { return MAP; },
     mapCur: mapCur, mapListAt: mapListAt, mapLvNow: mapLvNow, mapLvAt: mapLvAt,
     mapStock: mapStock, mapStockQ: mapStockQ, mapAdmin: mapAdmin,
+    // 品质分档：插件要按"从高往低取"试算几万种配法，走的必须是同一个函数
+    mapStockQFor: mapStockQFor, mapQBlend: mapQBlend, MAP_Q_MAX: MAP_Q_MAX,
     // 餐馆
-    mapRestRating: mapRestRating, mapRestOcc: mapRestOcc,
+    mapRestRating: mapRestRating, mapRestRatingAt: mapRestRatingAt,
+    mapRestOcc: mapRestOcc,
     mapRestNeed: mapRestNeed, mapRestWage: mapRestWage,
     mapRestSeats: mapRestSeats, mapRestMenuOk: mapRestMenuOk,
     mapRestOtherSeats: mapRestOtherSeats, mapRestAt: mapRestAt,
     mapRestCfgAt: mapRestCfgAt, mapRestStyle: mapRestStyle,
+    // 歇业衰减：插件漏了这一项就会报出一个这家店永远达不到的评分
+    mapRestStops: mapRestStops, mapRestDecay: mapRestDecay,
+    MAP_REST_STOP_DECAY: MAP_REST_STOP_DECAY,
+    // 菜单表：插件要在"用户有料的那些菜"里挑配法
+    MAP_REST_MENU: MAP_REST_MENU, MAP_REST_GROUPS: MAP_REST_GROUPS,
+    MAP_REST_GNAME: MAP_REST_GNAME, mapRestDish: mapRestDish,
+    mapName: mapName,
     MAP_REST_PRICE_MIN: MAP_REST_PRICE_MIN,
     MAP_REST_PRICE_MAX: MAP_REST_PRICE_MAX,
     MAP_REST_RATING_MAX: MAP_REST_RATING_MAX,
