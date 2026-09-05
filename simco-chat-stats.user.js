@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sim Companies 聊天存档 · 词频统计
 // @namespace    https://github.com/Hoshino-Saisho/simco-public
-// @version      1.9.1
+// @version      1.9.2
 // @description  聊天存档增强：① 词频统计（按小时/天/发送者/房间，支持排除词、强弱词三档、自定时区、图标码转名字、导出 CSV）② 销售办公室合同对比 —— 把多张单子并排摆开，比时利和利润率 ③ 餐馆优化器 —— 扫价格/服务/评分，画曲线和热力图，直接指出利润最高那一档
 // @author       —
 // @match        https://simco-chat.cc.cd/*
@@ -919,7 +919,17 @@
     '#scs-rest{position:fixed;right:18px;bottom:122px;z-index:99998;width:44px;height:44px;',
     '  border-radius:50%;border:1px solid var(--line,#243244);cursor:pointer;',
     '  background:var(--panel,#111823);color:var(--tx,#e8eef7);font-size:18px;',
-    '  box-shadow:0 6px 20px rgba(0,0,0,.4);display:none}',
+    /*
+     * ⚠️ 这里【不能】写 display:none。
+     *
+     *   显隐是用 style.display 控的，而"显示"那一步如果写成
+     *   `style.display = ''`，清掉的只是**行内**样式 —— 它会落回 CSS，
+     *   也就是落回这句 display:none，于是**永远不亮**。
+     *   旁边那个 #scs-cmp 之所以一直好用，正是因为它的 CSS 里没有这句。
+     *
+     *   现在两头都改硬了：CSS 里不写，显示时也明确写 'block' 而不是 ''。
+     */
+    '  box-shadow:0 6px 20px rgba(0,0,0,.4)}',
     '#scs-restwin{position:fixed;right:18px;bottom:172px;z-index:99997;',
     '  width:min(660px,calc(100vw - 36px));max-height:min(76vh,760px);overflow:auto;',
     '  background:var(--panel,#111823);color:var(--tx,#e8eef7);border-radius:12px;',
@@ -1824,6 +1834,19 @@
     var d = restRead();
     if (d.err) {
       box.appendChild(el('div', 'warn', d.err));
+      /*
+       * ⚠️ 报错之后还要给一条【下一步怎么办】。
+       *    只说"先点开一栋餐馆"是够的；但"页面版本太老"那种，
+       *    人不知道自己该干嘛，所以顺带把当前的判断结果摊出来。
+       */
+      var why = el('div', 'sub');
+      var missFn = restReady();
+      why.textContent =
+        '现在的状态：' +
+        (document.body.classList.contains('mode-map') ? '在游戏模拟里' : '不在游戏模拟里') +
+        '　' + (missFn ? ('页面缺 ' + missFn) : '页面算法齐了') +
+        '　' + (RW('MAP') && RW('MAP').sel ? '已选中一栋楼' : '还没点开任何楼');
+      box.appendChild(why);
       return;
     }
     box.appendChild(el('div', 'sub',
@@ -2016,21 +2039,22 @@
 
   /** 什么时候把那个按钮亮出来。 */
   /*
-   * 便宜的那道门：只看「在地图模式 + 选中的那栋是餐馆」。
+   * 便宜的那道门：**只看在不在游戏模拟里**。
+   *
+   * ⚠️ 第一版还要求"而且已经点进了一栋餐馆"。想法是对的（别在没用的地方挡着），
+   *    但后果很差：那个键什么时候会出现【全靠猜】——
+   *    没出现的时候，你没法区分"条件没满足"和"这功能根本坏了"。
+   *    实际上就是这么坏了一次，而屏幕上没有任何线索。
+   *
+   *    现在改成：进游戏模拟就亮，点开之后由面板自己说缺什么。
+   *    **能说话的面板 > 会消失的按钮。**
+   *
    * ⚠️ 这里【不能】调 restRead() —— 它会去算食材、工资、评分，
-   *    而这个 sync 是挂在 MutationObserver 上的，页面每重画一次就跑一遍。
+   *    而这个 sync 挂在 MutationObserver 上，页面每重画一次就跑一遍。
    */
   function restOn() {
     try {
-      if (!document.body.classList.contains('mode-map')) return false;
-      if (restReady()) return false;
-      var MAP = RW('MAP');
-      if (!MAP || !MAP.sel) return false;
-      var hit = false;
-      RW('mapListAt')(RW('mapCur')()).forEach(function (b) {
-        if (b.k === MAP.sel && b.b === RW('MAP_REST_BLD')) hit = true;
-      });
-      return hit;
+      return document.body.classList.contains('mode-map');
     } catch (e) { return false; }
   }
 
@@ -2038,7 +2062,8 @@
     var sync = function () {
       var on = restOn();
       var fab = document.getElementById('scs-rest');
-      if (fab) fab.style.display = on ? '' : 'none';
+      // ⚠️ 明确写 'block'，不写 '' —— 见上面 CSS 那段注释
+      if (fab) fab.style.display = on ? 'block' : 'none';
       if (!on) {
         var w = document.getElementById('scs-restwin');
         if (w) w.style.display = 'none';
