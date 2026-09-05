@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sim Companies 聊天存档 · 词频统计
 // @namespace    https://github.com/Hoshino-Saisho/simco-public
-// @version      1.9.2
+// @version      1.15.0
 // @description  聊天存档增强：① 词频统计（按小时/天/发送者/房间，支持排除词、强弱词三档、自定时区、图标码转名字、导出 CSV）② 销售办公室合同对比 —— 把多张单子并排摆开，比时利和利润率 ③ 餐馆优化器 —— 扫价格/服务/评分，画曲线和热力图，直接指出利润最高那一档
 // @author       —
 // @match        https://simco-chat.cc.cd/*
@@ -959,6 +959,20 @@
     '  border:1px solid var(--line,#243244);background:var(--panel2,#0d141d);',
     '  color:var(--mut,#93a4bd);font-family:inherit;font-size:12px}',
     '#scs-restwin .tabs button.on{border-color:var(--acc,#7dd3fc);color:var(--acc,#7dd3fc)}',
+    '#scs-restwin .chk{display:inline-flex;align-items:center;gap:4px;cursor:pointer;',
+    '  font-size:12px;color:var(--tx,#e8eef7)}',
+    '#scs-restwin .mrw{color:var(--warn,#facc15)}',
+    /* 分档表：数字列右对齐，不然一眼看不出哪个大 */
+    '#scs-restwin table.qt{border-collapse:collapse;width:100%;font-size:11.5px;',
+    '  margin:6px 0}',
+    '#scs-restwin table.qt th,#scs-restwin table.qt td{padding:3px 6px;text-align:right;',
+    '  border-bottom:1px solid var(--line,#243244);white-space:nowrap}',
+    '#scs-restwin table.qt th:first-child,#scs-restwin table.qt td:first-child,',
+    '#scs-restwin table.qt th:last-child,#scs-restwin table.qt td:last-child{text-align:left}',
+    '#scs-restwin table.qt th{color:var(--mut,#93a4bd);font-weight:600}',
+    /* 「这一轮拿到的品质」和「整仓平均」不一样的那几行标出来 —— 这块面板的全部意义 */
+    '#scs-restwin table.qt tr.hit td{color:var(--acc,#7dd3fc)}',
+    '#scs-restwin table.qt tr.mrw td{color:var(--warn,#facc15)}',
     '#scs-cmp{position:fixed;right:18px;bottom:70px;z-index:99998;width:44px;height:44px;',
     'border-radius:12px;background:#1b1f2a;color:#fbbf24;border:1px solid rgba(251,191,36,.4);',
     'cursor:pointer;font-size:17px;line-height:44px;text-align:center;font-family:inherit;',
@@ -1477,10 +1491,21 @@
    *   下面这个 RW() 就从那张表里取；顺带也认裸的 window.xxx，
    *   万一以后页面换了暴露方式，插件不用跟着改。
    */
+  /*
+   * 插件自己的版本号，写在状态行里。
+   * ⚠️ 查"到底该更新哪一边"的时候，两边的版本必须【同时】看得见 ——
+   *    只报页面指纹的话，会漏掉"插件没更新"这一半。
+   */
+  var SCS_VER = '1.15.0';
+
   var REST_FN = ['MAP', 'mapCur', 'mapListAt', 'mapLvNow', 'mapStock', 'mapStockQ',
+                 'mapStockQFor', 'mapQBlend', 'MAP_Q_MAX',
                  'mapRestRating', 'mapRestOcc', 'mapRestNeed', 'mapRestWage',
                  'mapRestSeats', 'mapRestMenuOk', 'mapRestOtherSeats',
                  'mapRestAt', 'mapRestCfgAt', 'mapRestStyle',
+                 'mapRestStops', 'mapRestDecay',
+                 'MAP_REST_MENU', 'MAP_REST_GROUPS', 'MAP_REST_GNAME', 'mapRestDish',
+                 'mapName',
                  'MAP_REST_PRICE_MIN', 'MAP_REST_PRICE_MAX', 'MAP_REST_RATING_MAX',
                  'MAP_REST_BLD'];
   function RW(n) {
@@ -1494,16 +1519,59 @@
     }
     return null;
   }
+  /**
+   * 没准备好的时候，说清楚是【哪一种】没准备好。
+   *
+   * ⚠️ 两种情况的下一步完全不同，混成一句"版本太老"最坑：
+   *     整张表都没有 → 页面是旧的，**要重新发一次页面**
+   *     表在但缺一项 → 页面比插件旧一点，补那一项就行
+   *    第一版就是混着说的，于是"到底该更新哪一边"完全靠猜。
+   */
+  function restWhy() {
+    var miss = restReady();
+    if (!miss) return null;
+    var box = window.SIMCO_MAP;
+    if (!box) {
+      return '这个页面还没有 SIMCO_MAP 那张导出表 —— **页面是旧的**。\n' +
+             '插件靠它去调页面自己的餐馆算法（不自己抄一份公式），所以缺了就不开。\n' +
+             '要做的是：把新版页面发上去（Cloudflare 的 worker.js 和 GitHub 的 index.html），' +
+             '然后强刷一次。光更新插件没用。';
+    }
+    // box 一定在（上面已经挡了），但还是别用裸的 box.build —— 这一屏是报错用的，
+    // 报错的路上再抛一次，人就只剩一片空白了
+    return '页面的导出表里缺 ' + miss + '（页面指纹 ' + ((box && box.build) || '未知') + '）——\n' +
+           '页面比插件旧一点。把页面重新发一次就好。';
+  }
 
-  var REST = { price: '', rating: '', staff: null, view: 'heat',
-               yaw: -0.6, pitch: 0.9, grid: null };
+  /*
+   * showQ / optMenu 这两个是**默认关着**的（`false`）——
+   * 勾上才出现。它们各自会多出一整块界面和一次穷举，
+   * 平时进来只想看"这个价该定多少"的人不该被它们挡着。
+   */
+  var REST = { price: '', rating: '', occ: '', staff: null,
+               view: 'heat', yaw: -0.6, pitch: 0.9, grid: null,
+               showQ: false, optMenu: false, menuRun: null };
+
+  /*
+   * ---- 自设定的那几项，打包成一个 ov 传下去 ----
+   *
+   * ⚠️ 原来是一个一个当位置参数传（`ratingOv`）。加第二个（上座率）的时候
+   *    每个函数都要多一个参数、每个调用点都要多一个 `null` ——
+   *    而漏掉一个调用点【不会报错】，只会让那一处悄悄用回默认值，
+   *    屏幕上看着完全正常。所以改成一个对象，加第三个时不用再动签名。
+   *
+   *   ov.r    评分覆盖值（0~10），null = 按菜单算
+   *   ov.occ  上座率覆盖值（0~1 的小数，界面上按 % 填），null = 按评分算
+   */
+  function restOv(r, occ) { return { r: r == null ? null : Number(r),
+                                     occ: occ == null ? null : Number(occ) }; }
+  function OVR(ov) { return (ov && ov.r != null) ? ov.r : null; }
+  function OVO(ov) { return (ov && ov.occ != null) ? ov.occ : null; }
 
   /** 从页面上把这一栋餐馆的现状抓出来。抓不到的留空。 */
   function restRead() {
-    var miss = restReady();
-    if (miss) return { err: '页面上找不到 ' + miss + ' —— 存档站的版本太老了。\n' +
-                            '这个功能靠直接调页面自己的餐馆算法，不自己抄一份，' +
-                            '所以缺了就不开。刷新一下、或者等站点更新。' };
+    var why = restWhy();
+    if (why) return { err: why };
     var MAP = RW('MAP');
     if (!MAP) return { err: '页面上没有 MAP —— 先进「游戏模拟」那个模式。' };
     var x = null;
@@ -1518,61 +1586,362 @@
 
     var live = RW('mapRestAt')(x.k, RW('mapCur')());
     var eff = live ? RW('mapRestCfgAt')(live, RW('mapCur')()) : null;
+    /*
+     * ---- 读的必须是【页面面板上摆着的那一份】，也就是草稿 ----
+     *
+     * ⚠️ 原来这里优先读 `eff`（这一轮实际在跑的那份），
+     *    而页面面板显示的是草稿 `dr`。营业中一改草稿（这正是打开面板的目的），
+     *    两边立刻分家：面板按新菜单给评分，插件按旧菜单给评分，
+     *    **而两边各自看都对**。
+     *
+     *    页面在你打开面板时会把草稿从当前生效那份同步过来，
+     *    所以"优先草稿"在没改的时候和 eff 是同一份，改了之后跟着面板走 —— 两种情况都对得上。
+     */
     var dr = (MAP.rdraft || {})[x.k] || {};
-    var menu = (eff && eff.menu) || dr.menu || [];
+    var hasDraft = !!(dr.menu && dr.menu.length);
+    var base = hasDraft ? dr : (eff || {});
+    var menu = base.menu || [];
     var style = live ? live.style : RW('mapRestStyle')(x.k, RW('mapCur')());
     var lv = RW('mapLvNow')(x);
-    var staff = (REST.staff == null)
-      ? !!((eff && eff.staff) || dr.staff) : REST.staff;
+    var staff = (REST.staff == null) ? !!base.staff : REST.staff;
+    /*
+     * 草稿和这一轮实际在跑的那份不一样时，要说一声 ——
+     * 不然"这一屏算的到底是哪一份"没法知道。
+     */
+    var draftDiff = !!(live && eff && hasDraft && (
+      dr.menu.slice().sort().join(',') !== eff.menu.slice().sort().join(',') ||
+      Number(dr.price) !== Number(eff.price) ||
+      !!dr.staff !== !!eff.staff));
 
-    // 食材成本：按仓库里的均价算这一轮要花多少
-    var cost = 0, missMat = [];
-    try {
-      RW('mapRestNeed')(menu, lv, style).forEach(function (u) {
-        var g = RW('mapStock')(u.id);
-        if (!g) { missMat.push(u.id); return; }
-        cost += g.c * u.n;
-      });
-    } catch (e) {}
+    /*
+     * ---- 仓库【快照】：每道菜的品质分档，只取一次 ----
+     *
+     * ⚠️ mapStock 每问一次都要重走一遍事件流。菜单优化器要试几万种配法，
+     *    照着一次次问能跑到分钟级。所以在这儿把 16 道菜的 lots 一次性抓下来，
+     *    后面全部在快照上算。
+     *
+     * ⚠️ 但**混合的规则不抄** —— 走的是页面导出的 mapQBlend，
+     *    页面和插件是同一个函数。抄一份出去的话，"从高往低取"这条规则
+     *    就写了两遍，两边迟早不一样，而且各自看都对。
+     */
+    var lots = {}, unitQ = {};
+    RW('MAP_REST_MENU').forEach(function (dish) {
+      var g = null;
+      try { g = RW('mapStock')(dish.id); } catch (e) {}
+      lots[dish.id] = g ? g.lots : null;
+      unitQ[dish.id] = g ? g.q : 0;
+    });
 
-    var qsum = 0;
-    try {
-      menu.forEach(function (id) { qsum += RW('mapStockQ')(id); });
-    } catch (e) {}
+    var d0 = { lv: lv, style: style, lots: lots };
+    var cur = restMenuCalc(d0, menu);
+
+    /*
+     * ---- 歇业衰减：评分要乘 0.875^（这一笔开张前歇过几次业） ----
+     *
+     * ⚠️ 这一条原来【整条漏了】，是这个面板报过的最坏的一种错：
+     *    它不会算崩，只会把评分报成一个**这家店永远达不到的数** ——
+     *    歇过一次业就差 12.5%，插件说 8.96、页面说 7.84，
+     *    而两边各自看都对，谁也不说另一个错。
+     *
+     * ⚠️ 数的是【这一笔开张之前】的次数，不是数到现在 ——
+     *    走页面的 mapRestDecay，不自己数一遍。
+     */
+    var decayFrom = live ? live.h : RW('mapCur')();
+    var stops = RW('mapRestStops')(x.k, decayFrom);
+    var decay = RW('mapRestDecay')(x.k, decayFrom);   // 只用来提示，不参与计算
 
     return {
       x: x, lv: lv, style: style, menu: menu, staff: staff,
       seats: RW('mapRestSeats')(lv, style),
-      cost: cost, missMat: missMat, qsum: qsum,
+      lots: lots, unitQ: unitQ, stops: stops, decay: decay,
+      cur: cur, cost: cur.cost, qsum: cur.qsum, missMat: cur.miss,
       wage: RW('mapRestWage')(lv, style, staff),
       wageAlt: RW('mapRestWage')(lv, style, !staff),
       other: RW('mapRestOtherSeats')(x.k, RW('mapCur')()),
       ok: RW('mapRestMenuOk')(menu),
-      livePrice: eff ? eff.price : (dr.price || null),
+      livePrice: base.price != null ? base.price : null,
+      draftDiff: draftDiff, eff: eff,
       running: !!live,
     };
   }
 
-  /** 一个价格 / 一个服务档下的整轮账。全部走页面自己的函数。 */
-  function restOne(d, price, staff) {
-    var cfg = { menu: d.menu, price: price, staff: staff, style: d.style };
-    var rt = RW('mapRestRating')(cfg);
-    var oc = RW('mapRestOcc')(rt.r, price, d.other);
+  /**
+   * 一份菜单在这个规模 / 这个装修下：吃多少料、花多少钱、总品质是多少。
+   *
+   * ⚠️ 成本和品质走的是**同一批 lots**（从高品质往低取）。
+   *    第一版成本用的是整仓均价 `mapStock(id).c` —— 那就成了
+   *    "按最高品质给评分、按整仓均价算成本"的四不像：
+   *    仓里 100 个贵的 Q12 + 10 万个便宜的 Q0，
+   *    评分按 Q12 给，成本却按几乎全是 Q0 的均价算，**利润凭空多出来一大截**。
+   *    而两边各自看都对。
+   */
+  function restMenuCalc(d, menu) {
+    var need = {}, cost = 0, qsum = 0, miss = [], short = [];
+    RW('mapRestNeed')(menu, d.lv, d.style).forEach(function (u) {
+      need[u.id] = u.n;
+      var lots = d.lots[u.id];
+      if (!lots || !lots.length) {
+        // 仓里一个都没有：成本算不出来（记一笔），品质走页面的回落口径
+        miss.push(u.id);
+        try { qsum += RW('mapStockQFor')(u.id, u.n); } catch (e) {}
+        return;
+      }
+      var b = RW('mapQBlend')(lots, u.n);
+      cost += (b.c || 0) * b.got;
+      qsum += (b.ql || 0);
+      if (b.short) short.push(u.id);
+    });
+    return { menu: menu, need: need, cost: cost, qsum: qsum,
+             miss: miss, short: short };
+  }
+
+  /**
+   * 一个价格 / 一个服务档下的整轮账。全部走页面自己的函数。
+   *
+   * `m` 是 restMenuCalc 的结果（哪份菜单、吃多少料、总品质多少）。
+   * 不传就用当前这一份 —— 菜单优化器会拿别的配法进来。
+   *
+   * ⚠️ 总品质【按这一轮真的要用掉那么多】算，不是整仓平均。
+   *    仓里 100 个 Q8 + 1 万个 Q0、这一轮只吃 60 个的话，拿到的是**纯 Q8**。
+   *    用整仓平均的话，"专门备一批高品质料"这件事在评分里完全消失，
+   *    而页面自己的账是按前者记的 —— 两边会对不上，各自看都对。
+   */
+  function restOne(d, price, staff, ov, m) {
+    var mm = m || d.cur;
     var seats = d.seats;
-    var served = Math.min(seats, Math.floor(seats * oc.occ));
     var wage = RW('mapRestWage')(d.lv, d.style, staff);
-    return { price: price, staff: staff, rating: rt.r, occ: oc.occ,
+    var oFix = OVO(ov);
+    var rating, occ, comp = null, traffic = null;
+    if (oFix != null) {
+      /*
+       * ⚠️ 上座率被钉死之后，**评分整条链就断了**：
+       *    评分只通过 mapRestOcc 影响结果，那一步被绕过，
+       *    菜单、品质、豪华、沟通就全都不影响这一轮的账了。
+       *
+       *    所以这里【干脆不算评分】—— 算了再摆出来最坑：
+       *    屏幕上会有一个跟着菜单变的评分，而它一分钱都不影响，
+       *    人会一直调菜单等着利润动。
+       *    界面那边改成报「你填的上座率反推出来的评分」，那个才有意义。
+       *
+       *    顺带：不算评分，五万多种配法的穷举从三四秒降到零点几秒。
+       */
+      occ = Math.max(0, Math.min(1, oFix));
+      rating = OVR(ov);                    // 评分也填了就照抄，但它不参与计算
+    } else {
+      /*
+       * ⚠️ **这里【不】乘歇业衰减。**
+       *
+       *    我上一版乘了，是因为我把「歇业」当成了常态。实际不是：
+       *    餐馆一旦开起来就一直转，不主动排「下次关闭」它不会停 ——
+       *    真正会歇业的只有切装修风格那一次。
+       *
+       *    所以常态下衰减恒等于 1，乘它只会凭空把评分压低。
+       *    页面那边算历史账时仍然要乘（那是页面的机制），
+       *    两边要是对不上，差的就是这一项 —— 所以下面把次数摆在屏幕上，
+       *    **不藏着**：藏起来的话，两个都对的数会莫名其妙对不上。
+       */
+      rating = (OVR(ov) == null)
+        ? RW('mapRestRating')({ menu: mm.menu, price: price, staff: staff,
+                                style: d.style, qsum: mm.qsum }).r
+        : OVR(ov);
+      var oc = RW('mapRestOcc')(rating, price, d.other);
+      occ = oc.occ; comp = oc.comp; traffic = oc.traffic;
+    }
+    var served = Math.min(seats, Math.floor(seats * occ));
+    return { price: price, staff: staff, rating: rating, occ: occ,
+             occFixed: oFix != null, comp: comp, traffic: traffic, m: mm,
              served: served, spoiled: seats - served,
              revenue: served * price,
-             profit: served * price - d.cost - wage, wage: wage };
+             profit: served * price - mm.cost - wage, wage: wage };
+  }
+
+  /**
+   * 反推：你量到的上座率是 occ，在这个价位上对应的评分该是多少。
+   *
+   * ⚠️ **不自己解方程** —— 那要把 0.08 / 0.82 / 0.25 那几个系数抄进来。
+   *    改成拿页面的 mapRestOcc 二分：上座率对评分是单调递增的，一定收敛。
+   *    页面改公式，这里自动跟着对。
+   *
+   * 够不到就返回 { err }，**不给一个看着正常的数** ——
+   * 价格罚和同行挤占会把可达区间整段压下去，光靠评分是补不回来的。
+   */
+  function restImpliedRating(d, price, occ) {
+    var max = RW('MAP_REST_RATING_MAX');
+    var lo = 0, hi = max;
+    var oLo = RW('mapRestOcc')(lo, price, d.other).occ;
+    var oHi = RW('mapRestOcc')(hi, price, d.other).occ;
+    if (occ < oLo - 1e-9 || occ > oHi + 1e-9) {
+      return { err: '在 $' + price + ' 上，评分从 0 到 ' + max +
+                    ' 只能让上座率落在 ' + (oLo * 100).toFixed(1) + '% ~ ' +
+                    (oHi * 100).toFixed(1) + '% 之间 —— 你填的 ' +
+                    (occ * 100).toFixed(1) + '% 光靠评分够不到。' };
+    }
+    for (var i = 0; i < 60; i++) {
+      var mid = (lo + hi) / 2;
+      if (RW('mapRestOcc')(mid, price, d.other).occ < occ) lo = mid; else hi = mid;
+    }
+    return { rating: (lo + hi) / 2 };
   }
 
   /** 价格从头扫到尾。步长取整块的 1 元，350−60 就 291 个点，够密也够快。 */
-  function restSweep(d, staff) {
+  function restSweep(d, staff, ov, m) {
     var lo = RW('MAP_REST_PRICE_MIN'), hi = RW('MAP_REST_PRICE_MAX');
     var out = [];
-    for (var p = lo; p <= hi; p++) out.push(restOne(d, p, staff));
+    for (var p = lo; p <= hi; p++) out.push(restOne(d, p, staff, ov, m));
     return out;
+  }
+
+  /* ==================== 菜单优化（默认关着，勾了才跑） ====================
+   *
+   * 「在我**有料**的那些菜里，哪一种配法最赚」。
+   *
+   * ⚠️ 只把**仓库里真有货、而且够这一轮吃**的菜算进候选。
+   *    把没料的菜排进"最优菜单"是没意义的 —— 那份菜单根本开不起来，
+   *    而屏幕上会显示成一个看着挺像样的答案。
+   *
+   * ⚠️ 组合数是**乘起来**的：沙拉吧 6 道、主菜 6 道、饮品 4 道，
+   *    每组至少一道 → (2⁶−1) × (2⁶−1) × (2⁴−1) = 63 × 63 × 15 = 59,535 种。
+   *    全扫得动，所以这里**是穷举，不是启发式** —— 报出来的"最赚"
+   *    在给定价格下是真的最赚，不是"搜到的最好的"。
+   */
+  function restSubsets(ids) {
+    var out = [];
+    var n = ids.length;
+    for (var mask = 1; mask < (1 << n); mask++) {
+      var one = [];
+      for (var i = 0; i < n; i++) if (mask & (1 << i)) one.push(ids[i]);
+      out.push(one);
+    }
+    return out;
+  }
+  /** 按组分开列出「有货」的菜。三组里但凡有一组一个都没有，就没得挑。 */
+  function restAvail(d) {
+    var by = {};
+    RW('MAP_REST_GROUPS').forEach(function (g) { by[g] = []; });
+    RW('MAP_REST_MENU').forEach(function (dish) {
+      if ((d.unitQ[dish.id] || 0) > 0) by[dish.g].push(dish.id);
+    });
+    return by;
+  }
+  /**
+   * 穷举。两段：
+   *   ① 在**一个价位、一档服务**上把全部配法扫一遍，留下最赚的那几份
+   *   ② 对留下的那几份，两档服务各做一次完整的 291 档价格扫描，选总冠军
+   *
+   * ⚠️ 第一段固定价格和服务档，所以严格说"最赚"是**在那一格上**最赚。
+   *    第二段是用来兜住"换了价格 / 换了服务档，排名会变"的 —— 但它只复查前几名。
+   *    这条限制**写在屏幕上**，不藏起来：藏起来的话，
+   *    一个两段搜索会伪装成一次全局穷举。
+   *
+   * ⚠️ 第一段为什么不把两档服务一起扫：五万多种配法各算一次评分已经三四秒，
+   *    两档就是七八秒 —— 一个整整卡住七八秒的标签页，
+   *    屏幕上不会有任何一处说它在忙。服务档挪到第二段（只有几十份）里比。
+   */
+  function restMenuOpt(d, staff, ov, p0, keep) {
+    var by = restAvail(d);
+    var groups = RW('MAP_REST_GROUPS');
+    var emptyG = groups.filter(function (g) { return !by[g].length; });
+    if (emptyG.length) {
+      return { err: '这几组一道菜的料都没有：' +
+                    emptyG.map(function (g) { return RW('MAP_REST_GNAME')[g]; }).join('、') +
+                    ' —— 三组齐了才开得了轮，没得挑。' };
+    }
+    var subs = groups.map(function (g) { return restSubsets(by[g]); });
+    var total = subs.reduce(function (a, s) { return a * s.length; }, 1);
+    var archs = (staff == null) ? [false, true] : [staff];
+    var st0 = archs[0];
+    var rows = [], skipped = 0;
+    subs[0].forEach(function (a) {
+      subs[1].forEach(function (b) {
+        subs[2].forEach(function (c) {
+          var menu = a.concat(b, c);
+          var m = restMenuCalc(d, menu);
+          // 料不够这一轮吃的配法直接扔掉 —— 它开不起来
+          if (m.short.length || m.miss.length) { skipped++; return; }
+          rows.push(restOne(d, p0, st0, ov, m));
+        });
+      });
+    });
+    /*
+     * ⚠️ 排序的依据要跟着【问的是什么】变：
+     *
+     *   没钉上座率 → 问的是"怎么最赚"      → 按利润排
+     *   钉了上座率 → 问的是"菜该怎么配"     → 按【能定到的最高价】排
+     *
+     *   钉了还按利润排的话，排出来的其实是"最省料的那一套"——
+     *   上菜数不随菜单变，利润只剩料钱在动。那答的不是你问的问题。
+     */
+    if (OVO(ov) != null) {
+      rows.forEach(function (r) {
+        var h = restMaxPriceAt(restTargetScan(d, OVO(ov), r.m, r.staff));
+        r.maxPrice = h ? h.price : null;
+        r.reqAt = h ? h.req : null;
+      });
+      rows = rows.filter(function (r) { return r.maxPrice != null; });
+      rows.sort(function (x, y) { return y.maxPrice - x.maxPrice; });
+    } else {
+      rows.sort(function (x, y) { return y.profit - x.profit; });
+    }
+    var K = keep || 40;
+    var fin = null, n2 = 0;
+    if (OVO(ov) != null) {
+      // 钉了上座率：第一段已经按"能定到的最高价"排好了，冠军就是第一名
+      fin = rows[0] || null;
+    } else {
+      rows.slice(0, K).forEach(function (r) {
+        archs.forEach(function (st) {
+          n2++;
+          var b = restBest(restSweep(d, st, ov, r.m));
+          if (!fin || b.profit > fin.profit) fin = b;
+        });
+      });
+    }
+    return { best: fin, tried: rows.length, tried2: n2, total: total,
+             skipped: skipped, p0: p0, st0: st0, keep: K, avail: by,
+             archs: archs, stage1: rows.slice(0, K) };
+  }
+
+  /**
+   * ---- 上座率是【目标】，不是假设 ----
+   *
+   * ⚠️ 我上一版把它做成了"假设上座率是 T，然后求利润最大" ——
+   *    那必然顶到最高价（上菜数不动，每涨 1 块就多赚一份），
+   *    于是屏幕上永远写着"最优价 $350"。
+   *    **那是个废答案**：上座率是上座率，跟"该定多高"是两回事，
+   *    而你问的本来就是反过来的那个方向。
+   *
+   *    现在做成反解：给定要保持的上座率，
+   *      · 每个价位上【需要】多少评分   ← 拿页面的 mapRestOcc 二分
+   *      · 你这份菜单在那个价位上【有】多少评分
+   *    两条线一交，交点就是"最高能定到多少钱还保持得住"。
+   *
+   * ⚠️ 两条线的方向是相反的，这也是为什么一定有交点：
+   *      需要的评分：价格越高，价格罚越重 → 需要越高
+   *      你有的评分：价格越高，价格分越低 → 越低
+   */
+  function restTargetScan(d, T, m, staff) {
+    var lo = RW('MAP_REST_PRICE_MIN'), hi = RW('MAP_REST_PRICE_MAX');
+    var mm = m || d.cur;
+    var out = [];
+    for (var p = lo; p <= hi; p++) {
+      var req = restImpliedRating(d, p, T);
+      var have = RW('mapRestRating')({ menu: mm.menu, price: p, staff: staff,
+                                       style: d.style, qsum: mm.qsum }).r;
+      out.push({ price: p, req: req.err ? null : req.rating, reqErr: req.err || null,
+                 have: have, ok: !req.err && have >= req.rating - 1e-9 });
+    }
+    return out;
+  }
+  /**
+   * 保持这个上座率的前提下，最高能定到多少钱。
+   *
+   * ⚠️ 返回 null 表示【一个价位都达不到】—— 不返回一个凑合的数。
+   *    凑合一个的话，屏幕上会出现一个你照着定、结果达不到目标的价格。
+   */
+  function restMaxPriceAt(rows) {
+    var best = null;
+    rows.forEach(function (r) { if (r.ok) best = r; });
+    return best;
   }
   /** 找利润最高的那一个。 */
   function restBest(rows) {
@@ -1722,7 +2091,7 @@
   }
 
   /** 热力图：价格 × 评分 → 利润。精确、能悬停，找最优比 3D 快。 */
-  function restHeat(box, gd) {
+  function restHeat(box, gd, curve) {
     var W = 620, H = 260, PAD = 34;
     var cv = restCv(W, H), g = cv.g;
     g.fillStyle = restCss('--panel2', '#0d141d'); g.fillRect(0, 0, W, H);
@@ -1736,11 +2105,36 @@
         g.fillRect(PAD + j * cw, H - 18 - (i + 1) * ch, cw + 0.6, ch + 0.6);
       }
     }
-    if (gd.top) {
-      var tx = PAD + (gd.top.price - gd.lo) / (gd.hi - gd.lo) * (W - PAD - 12);
-      var ty = H - 18 - gd.top.rating / gd.max * (H - PAD - 18);
+    /*
+     * ⚠️ 先画"够得到的那条线"，再画面上最高点的圈 ——
+     *    顺序反了的话，圈会被线盖住，而那个圈是唯一区分
+     *    "能拿到的"和"假设的"的记号。
+     */
+    var XY = function (price, rating) {
+      return { x: PAD + (price - gd.lo) / (gd.hi - gd.lo) * (W - PAD - 12),
+               y: H - 18 - rating / gd.max * (H - PAD - 18) };
+    };
+    if (curve && curve.length) {
       g.strokeStyle = restCss('--ok', '#86efac'); g.lineWidth = 2;
-      g.beginPath(); g.arc(tx, ty, 5, 0, Math.PI * 2); g.stroke();
+      g.beginPath();
+      curve.forEach(function (r, i) {
+        var p = XY(r.price, r.rating);
+        if (i) g.lineTo(p.x, p.y); else g.moveTo(p.x, p.y);
+      });
+      g.stroke();
+      var bb = null;
+      curve.forEach(function (r) { if (!bb || r.profit > bb.profit) bb = r; });
+      if (bb) {
+        var bp = XY(bb.price, bb.rating);
+        g.fillStyle = restCss('--ok', '#86efac');
+        g.beginPath(); g.arc(bp.x, bp.y, 4, 0, Math.PI * 2); g.fill();
+      }
+    }
+    if (gd.top) {
+      var tp = XY(gd.top.price, gd.top.rating);
+      // 空心白圈 = 面上最高点，可能【够不到】；实心绿点 = 你真能拿到的最优
+      g.strokeStyle = 'rgba(255,255,255,.75)'; g.lineWidth = 1.6;
+      g.beginPath(); g.arc(tp.x, tp.y, 5, 0, Math.PI * 2); g.stroke();
     }
     g.fillStyle = restCss('--mut', '#93a4bd'); g.font = '10px system-ui,sans-serif';
     g.fillText('$' + gd.lo, PAD, H - 5);
@@ -1825,6 +2219,183 @@
     return i;
   }
 
+  /** 一个勾选框。默认全是关着的 —— 见 REST 那段注释。 */
+  function restChk(label, on, cb) {
+    var w = el('label', 'chk');
+    var i = document.createElement('input');
+    i.type = 'checkbox';
+    i.checked = !!on;
+    i.onchange = function () { cb(i.checked); };
+    w.appendChild(i);
+    w.appendChild(document.createTextNode(' ' + label));
+    return w;
+  }
+
+  /**
+   * ---- 勾选①：按品质分档摊开 ----
+   *
+   * 每道菜列出仓里的分档、这一轮吃掉几个、**实际拿到的品质**，
+   * 再把「整仓平均」并排摆出来。
+   *
+   * ⚠️ 摆两列是这一块的全部意义：仓里 100 个 Q8 + 1 万个 Q0 时，
+   *    整仓平均是 0.08，而这一轮只吃 60 个的话拿到的是**纯 Q8**。
+   *    只给一个数的话，看的人没法知道自己看的是哪一个。
+   */
+  function restQPanel(box, d) {
+    box.appendChild(el('div', 'sub',
+      '仓里每一批货各有各的品质，用料时【从高往低取】，' +
+      '最高那一档不够了才往下一档凑、按数量平均。\n' +
+      '所以「这一轮拿到的品质」和「整仓平均」经常不是一个数 —— 下面并排列出来。'));
+    var t = el('table', 'qt');
+    var hr = el('tr');
+    ['菜', '这一轮吃', '实际品质', '整仓平均', '实际均价', '分档（品质×数量）']
+      .forEach(function (h) { hr.appendChild(el('th', null, h)); });
+    t.appendChild(hr);
+    var diff = 0;
+    d.menu.forEach(function (id) {
+      var n = d.cur.need[id] || 0;
+      var lots = d.lots[id];
+      var b = lots && lots.length ? RW('mapQBlend')(lots, n)
+                                  : { ql: null, c: null, got: 0, short: true };
+      var whole = 0, wq = 0, wc = 0;
+      (lots || []).forEach(function (L) { whole += L.q; wq += L.ql * L.q; wc += L.c * L.q; });
+      var avg = whole > 0 ? wq / whole : null;
+      var r = el('tr');
+      r.appendChild(el('td', null, RW('mapName')(id)));
+      r.appendChild(el('td', null, n.toLocaleString()));
+      r.appendChild(el('td', null, b.ql == null ? '仓里没有'
+        : ('Q' + (Math.round(b.ql * 100) / 100))));
+      r.appendChild(el('td', null, avg == null ? '—'
+        : ('Q' + (Math.round(avg * 100) / 100))));
+      r.appendChild(el('td', null, b.c == null ? '—' : ('$' + cmpMoney(b.c))));
+      r.appendChild(el('td', null, (lots || []).length
+        ? lots.map(function (L) {
+            return 'Q' + L.ql + '×' + Math.round(L.q).toLocaleString();
+          }).join('　')
+        : '—'));
+      if (b.ql != null && avg != null && Math.abs(b.ql - avg) > 1e-6) {
+        r.className = 'hit';
+        diff++;
+      }
+      if (b.short) r.className = 'mrw';
+      t.appendChild(r);
+    });
+    box.appendChild(t);
+    box.appendChild(el('div', 'sub', diff
+      ? ('有 ' + diff + ' 道菜的两个数【不一样】（标出来了）—— ' +
+         '评分和成本用的都是左边那个「实际品质」，因为仓库真扣料时就是这么扣的。')
+      : '这些菜仓里都只有一个品质档，两个数一样 —— 分档在这一局暂时不起作用。'));
+  }
+
+  /**
+   * ---- 勾选②：连菜单一起挑 ----
+   *
+   * ⚠️ 摆一个按钮而不是一进来就算：这一次要试五万多种配法。
+   *    自动跑的话，每改一次价格都会卡住几秒，而卡住的原因屏幕上没有任何线索。
+   */
+  function restMenuPanel(box, d, ov, hasP) {
+    var p0 = hasP ? Number(REST.price) : 96;
+    var byOcc = OVO(ov) != null;
+    if (byOcc) {
+      box.appendChild(el('div', 'sub',
+        '你填了上座率，所以这里挑的是【哪一套菜能让你在保住 ' +
+        (OVO(ov) * 100) + '% 的前提下定得最高】—— 不是"哪套最赚"。\n' +
+        '⚠️ 按利润排的话，上菜数不随菜单变，利润只剩料钱在动，' +
+        '排出来的会是"最省料的那一套"—— 那答的不是你问的问题。'));
+    }
+    box.appendChild(el('div', 'sub',
+      '在【仓里有料、而且够这一轮吃】的菜里穷举全部配法。\n' +
+      (byOcc ? '每一套都反解一次"最高能定到多少还保住这个上座率"，按那个价排。'
+             : ('⚠️ 分两段：先在 $' + p0 + ' 这一个价位、')) +
+      (byOcc ? '' : (REST.staff === true ? '优质服务' : '普通服务')) +
+      (byOcc ? '' :
+        ('上把全部配法扫一遍，再把最赚的前几份各做一次完整的价格扫描（两档服务都比）。\n' +
+         '所以第一段是真的穷举，第二段只复查前几名 —— ' +
+         '换价格会让排名小幅变动，极端情况下冠军可能落在复查名单之外。'))));
+    var bar = el('div', 'free');
+    var go = el('button', null, REST.menuRun ? '重新算一次' : '开始穷举（要几秒）');
+    go.onclick = function () {
+      REST.menuRun = restMenuOpt(d, REST.staff, ov, p0);
+      restRender();
+    };
+    bar.appendChild(go);
+    if (REST.menuRun) {
+      var cl = el('button', null, '清掉');
+      cl.onclick = function () { REST.menuRun = null; restRender(); };
+      bar.appendChild(cl);
+    }
+    box.appendChild(bar);
+
+    var run = REST.menuRun;
+    if (!run) return;
+    if (run.err) { box.appendChild(el('div', 'warn', run.err)); return; }
+    if (!run.best) {
+      box.appendChild(el('div', 'warn',
+        '一种配得起来的配法都没有：' + run.total.toLocaleString() +
+        ' 种里 ' + run.skipped.toLocaleString() + ' 种料不够。\n' +
+        '先把料备上 —— 用量是按【满座】算的，不是按上座率。'));
+      return;
+    }
+    var b = run.best;
+    var bt = el('div', 'best');
+    if (b.maxPrice != null) {
+      bt.appendChild(el('b', null, '保住 ' + (OVO(ov) * 100) + '% 还能定得最高的配法：'));
+      bt.appendChild(document.createTextNode(
+        '　' + b.m.menu.length + ' 道　最高定到 $' + b.maxPrice +
+        '　' + (b.staff ? '优质服务' : '普通服务') +
+        '　（那个价上需要评分 ' + (Math.round(b.reqAt * 100) / 100) +
+        '，这套菜有 ' + (Math.round(
+          RW('mapRestRating')({ menu: b.m.menu, price: b.maxPrice, staff: b.staff,
+                                style: d.style, qsum: b.m.qsum }).r * 100) / 100) +
+        '）　料 $' + cmpMoney(b.m.cost)));
+    } else {
+      bt.appendChild(el('b', null, '最赚的配法：'));
+      bt.appendChild(document.createTextNode(
+        '　' + b.m.menu.length + ' 道　价格 $' + b.price +
+        '　' + (b.staff ? '优质服务' : '普通服务') +
+        '　评分 ' + (Math.round(b.rating * 100) / 100) +
+        '　上座率 ' + (b.occ * 100).toFixed(1) + '%' +
+        '　这一轮 $' + cmpMoney(b.profit)));
+    }
+    box.appendChild(bt);
+
+    // 摊开这份菜单，按组分行 —— 多样性系数是按组算的，混在一行里看不出来
+    RW('MAP_REST_GROUPS').forEach(function (g) {
+      var ids = b.m.menu.filter(function (id) { return RW('mapRestDish')(id).g === g; });
+      var line = el('div', 'sub');
+      line.appendChild(el('b', null, RW('MAP_REST_GNAME')[g] + '　' + ids.length + ' 道　'));
+      line.appendChild(document.createTextNode(
+        ids.map(function (id) { return RW('mapName')(id); }).join('、')));
+      box.appendChild(line);
+    });
+
+    /*
+     * ⚠️ 一定要和【你现在这份】比一比。
+     *    只报一个"最优"的话，人没法知道值不值得动 ——
+     *    差 200 块和差 20 万，决定完全不一样。
+     */
+    var cmp = el('div', 'sub');
+    cmp.appendChild(el('b', null, '和你现在这份比：'));
+    if (b.maxPrice != null) {
+      var mineHit = restMaxPriceAt(restTargetScan(d, OVO(ov), d.cur, b.staff));
+      cmp.appendChild(document.createTextNode(mineHit
+        ? ('　你的 ' + d.menu.length + ' 道最高定到 $' + mineHit.price +
+           '　→ 换成上面那份能多定 $' + (b.maxPrice - mineHit.price))
+        : ('　你现在这份一个价位都保不住 ' + (OVO(ov) * 100) + '%，上面那份可以。')));
+    } else {
+      var mine = restBest(restSweep(d, b.staff, ov, d.cur));
+      cmp.appendChild(document.createTextNode(
+        '　你的 ' + d.menu.length + ' 道在最优价 $' + mine.price + ' 是 $' +
+        cmpMoney(mine.profit) + '　→ 换成上面那份多赚 $' +
+        cmpMoney(b.profit - mine.profit)));
+    }
+    box.appendChild(cmp);
+    box.appendChild(el('div', 'sub',
+      '第一段扫了 ' + run.tried.toLocaleString() + ' 种（' + run.total.toLocaleString() +
+      ' 种里有 ' + run.skipped.toLocaleString() + ' 种料不够，直接扔了）；' +
+      '第二段把前 ' + run.keep + ' 名做了 ' + run.tried2 + ' 次完整价格扫描。'));
+  }
+
   function restRender() {
     var box = document.getElementById('scs-restwin');
     if (!box) return;
@@ -1839,14 +2410,17 @@
        *    只说"先点开一栋餐馆"是够的；但"页面版本太老"那种，
        *    人不知道自己该干嘛，所以顺带把当前的判断结果摊出来。
        */
-      var why = el('div', 'sub');
+      var why2 = el('div', 'sub');
       var missFn = restReady();
-      why.textContent =
+      var bx = window.SIMCO_MAP;
+      why2.textContent =
         '现在的状态：' +
         (document.body.classList.contains('mode-map') ? '在游戏模拟里' : '不在游戏模拟里') +
-        '　' + (missFn ? ('页面缺 ' + missFn) : '页面算法齐了') +
-        '　' + (RW('MAP') && RW('MAP').sel ? '已选中一栋楼' : '还没点开任何楼');
-      box.appendChild(why);
+        '　导出表：' + (bx ? ('有（页面 ' + (bx.build || '未知') + '）') : '没有') +
+        '　' + (missFn ? ('缺 ' + missFn) : '算法齐了') +
+        '　' + (!missFn && RW('MAP') && RW('MAP').sel ? '已选中一栋楼' : '还没点开任何楼') +
+        '\n插件 ' + SCS_VER;
+      box.appendChild(why2);
       return;
     }
     box.appendChild(el('div', 'sub',
@@ -1862,13 +2436,25 @@
      ['总品质', (Math.round(d.qsum * 10) / 10)],
      ['食材成本', '$' + cmpMoney(d.cost)],
      ['工资（含管理费）', '$' + cmpMoney(d.wage)],
-     ['同行座位', d.other.toLocaleString()]].forEach(function (o) {
+     ['同行座位', d.other.toLocaleString()]].concat(d.stops > 0
+       ? [['⚠️ 页面记了歇业', '这栋楼在页面上记了 ' + d.stops + ' 次歇业，' +
+            '页面算历史账时评分会 ×' + (Math.round(d.decay * 1000) / 1000) +
+            '。餐馆常态是一直转、不主动排「下次关闭」不会停，' +
+            '所以**这一屏不算它**。两边评分对不上的话，差的就是这一项。']]
+       : []).forEach(function (o) {
       var one = el('span');
       one.appendChild(el('b', null, o[0] + ' '));
       one.appendChild(document.createTextNode(String(o[1])));
       got.appendChild(one);
     });
     box.appendChild(got);
+    if (d.draftDiff) {
+      box.appendChild(el('div', 'warn',
+        '⚠️ 这一屏算的是【你正在编辑的那一份】（和页面面板上摆着的一致），' +
+        '不是这一轮实际在跑的那一份。\n' +
+        '这一轮实际在跑：' + d.eff.menu.length + ' 道菜 · $' + d.eff.price + ' · ' +
+        (d.eff.staff ? '优质服务' : '普通服务') + '。'));
+    }
     if (d.missMat.length) {
       box.appendChild(el('div', 'warn',
         '⚠️ 有 ' + d.missMat.length + ' 样食材仓库里没有 —— 食材成本按【已有的那些】算，' +
@@ -1892,6 +2478,18 @@
     free.appendChild(restNum(REST.rating, '不填=按菜单算', function (v) {
       REST.rating = v; restRender();
     }));
+    /*
+     * 上座率：按 % 填，小数点随便（62.5 就是 62.5%）。
+     *
+     * ⚠️ 单位写在标签上，而且占位符里再写一遍 ——
+     *    这一格填 0.625 还是 62.5 是个真会犯的错，
+     *    而填错了不会报错，只会把上菜数算成千分之一，
+     *    然后整屏利润变成一大片亏损，**看着像是菜单太贵**。
+     */
+    free.appendChild(el('span', null, '　上座率 % '));
+    free.appendChild(restNum(REST.occ, '如 62.5，不填=按评分算', function (v) {
+      REST.occ = v; restRender();
+    }));
     var sb = el('button', null, REST.staff == null
       ? '服务：两档都扫' : (REST.staff ? '服务：优质' : '服务：普通'));
     sb.onclick = function () {
@@ -1905,6 +2503,182 @@
     var hasR = REST.rating !== '' && isFinite(Number(REST.rating));
 
     /*
+     * ⚠️ 填了范围外的数要【说出来】，不能悄悄夹住。
+     *    夹住的话，填 625（少打一个小数点）会被当成 100%，
+     *    整屏都按满座算 —— 而屏幕上没有任何一处说它替你改了数。
+     */
+    var occRaw = REST.occ !== '' && isFinite(Number(REST.occ)) ? Number(REST.occ) : null;
+    var occBad = occRaw != null && (occRaw < 0 || occRaw > 100);
+    var hasO = occRaw != null && !occBad;
+    var ov = restOv(hasR ? Number(REST.rating) : null, hasO ? occRaw / 100 : null);
+    var ratingOv = ov;
+    if (occBad) {
+      box.appendChild(el('div', 'warn',
+        '⚠️ 上座率填的是 ' + occRaw + ' —— 这一格的单位是【百分数】，' +
+        '要填 0~100（62.5 就是 62.5%）。\n' +
+        '这一次先当没填，按评分算。'));
+    }
+
+    /*
+     * ---- 上座率一钉死，好几条链就断了 ----
+     *
+     * ⚠️ 这一块必须摆出来，而且必须摆在图【前面】。
+     *    评分只通过 mapRestOcc 影响结果，那一步被绕过之后，
+     *    菜单、品质、豪华、沟通、销售加成**一分钱都不影响这一轮**——
+     *    不说的话，人会一路调菜单，等着利润动，而它永远不动。
+     */
+    /*
+     * ⚠️ 上菜数**只算一处**：拿 restOne 探一笔，屏幕上到处都用它的结果。
+     *
+     *    第一版屏幕上那行是自己乘一遍 `座位 × occRaw / 100` 算出来的 ——
+     *    于是"% 有没有换算对"这条规则同时活在两个地方。
+     *    结果是：把传下去那一路的 /100 拆掉，**测试照样绿**
+     *    （屏幕上那行自己除过了），而真正参与算钱的那一路已经错成 100 倍。
+     *    两边各自看都对。
+     *
+     *    上座率钉死时上菜数和价格无关，所以探哪个价位都一样。
+     */
+    var oProbe = hasO ? restOne(d, hasP ? Number(REST.price) : 96, d.staff, ov) : null;
+    if (hasO) {
+      var ob = el('div', 'got');
+      var o1 = el('span');
+      o1.appendChild(el('b', null, '上座率 ' + occRaw + '%（你钉死的）'));
+      o1.appendChild(document.createTextNode(
+        '　上菜 ' + oProbe.served.toLocaleString() +
+        ' / ' + d.seats.toLocaleString() + ' 座'));
+      ob.appendChild(o1);
+      var o2 = el('span');
+      o2.appendChild(el('b', null, '⚠️ 评分这条链断了：'));
+      o2.appendChild(document.createTextNode(
+        '菜单 / 品质 / 豪华 / 沟通 / 销售加成都只通过评分影响上座率，' +
+        '钉死之后它们对这一轮的账【一分钱都不影响】。优质服务只剩工资那一头。'));
+      ob.appendChild(o2);
+      box.appendChild(ob);
+
+      /*
+       * 反推：你量到这个上座率，对应的评分是多少 —— 这个数才是有意义的那个。
+       * ⚠️ 拿页面的 mapRestOcc 二分出来的，不是我这边解的方程。
+       */
+      var ip = restImpliedRating(d, hasP ? Number(REST.price) : 96, occRaw / 100);
+      var ir = el('div', 'sub');
+      if (ip.err) {
+        ir.textContent = '⚠️ ' + ip.err;
+      } else {
+        var mine0 = RW('mapRestRating')({ menu: d.menu, price: hasP ? Number(REST.price) : 96,
+                                          staff: d.staff, style: d.style,
+                                          qsum: d.cur.qsum });
+        ir.textContent =
+          '反推：在 $' + (hasP ? Number(REST.price) : 96) + ' 上，' + occRaw +
+          '% 对应评分 ' + (Math.round(ip.rating * 100) / 100) +
+          '　（你这份菜单算出来是 ' + (Math.round(mine0.r * 100) / 100) + '）\n' +
+          '这是拿页面自己的上座率公式二分出来的，不是我这边解的方程。';
+      }
+      box.appendChild(ir);
+    }
+
+    /*
+     * ---- 两个【默认关着】的开关 ----
+     *
+     * ⚠️ 这两块都会多摊出一整屏东西（一张分档表 / 一次五万多种配法的穷举）。
+     *    平时进来只想问"这个价该定多少"的人不该被它们挡着，所以默认不出现。
+     *
+     * ⚠️ 但**底下的算法不归它们管**：这一屏的总品质一直是按
+     *    「这一轮真的要吃掉那么多」算的（和页面自己的账一个口径）。
+     *    勾选只决定**摊不摊开给你看**，不决定算得对不对 ——
+     *    做成开关的话，关着的时候这一屏会和页面对不上，而两边各自看都对。
+     */
+    var opt = el('div', 'free');
+    opt.appendChild(restChk('按品质分档摊开', REST.showQ, function (v) {
+      REST.showQ = v; restRender();
+    }));
+    opt.appendChild(restChk('连菜单一起挑（只在有料的菜里）', REST.optMenu, function (v) {
+      REST.optMenu = v; REST.menuRun = null; restRender();
+    }));
+    box.appendChild(opt);
+
+    if (REST.showQ) restQPanel(box, d);
+    if (REST.optMenu) restMenuPanel(box, d, ratingOv, hasP);
+
+    /*
+     * ---- 上座率钉死时，图全都不画 ----
+     *
+     * ⚠️ 三张图的纵轴都是评分（或者由评分驱动），而评分这条链已经断了 ——
+     *    画出来是一张【每一行都一模一样】的面，和一条水平的曲线。
+     *    那种图最坑：它看着完全正常，只是不带任何信息，
+     *    而人会对着它得出"评分怎么调都没用"这种关于游戏的错误结论，
+     *    ——问题其实出在他自己钉死了上座率。
+     *
+     *    所以这里改成把结论直接说出来。
+     */
+    if (hasO) {
+      /*
+       * ---- 反解：要保持这个上座率，该怎么定价 / 需要多少评分 / 菜怎么配 ----
+       *
+       * ⚠️ 这一屏【不求利润最大】。钉死上座率再求利润最大必然顶到最高价，
+       *    那是个废答案 —— 上座率是上座率，跟"该定多高"是两回事。
+       *    利润在下面只作为一列信息列出来，不当目标。
+       */
+      var rowsT = restTargetScan(d, occRaw / 100, d.cur, !!d.staff);
+      var hit = restMaxPriceAt(rowsT);
+
+      if (!hit) {
+        /*
+         * ⚠️ 一个价位都够不到时，**不给一个凑合的价格**，
+         *    而是说清楚差在哪：是评分不够，还是这个上座率本来就到不了顶。
+         */
+        var first = rowsT[0];
+        box.appendChild(el('div', 'warn', first.reqErr
+          ? ('⚠️ ' + first.reqErr + '\n' +
+             '就算定到最低价 $' + first.price + '、评分拉满也到不了 ' + occRaw + '%。')
+          : ('⚠️ 你这份菜单一个价位都保不住 ' + occRaw + '%。\n' +
+             '最便宜的 $' + first.price + ' 那里：需要评分 ' +
+             (Math.round(first.req * 100) / 100) + '，你只有 ' +
+             (Math.round(first.have * 100) / 100) + '（差 ' +
+             (Math.round((first.req - first.have) * 100) / 100) + ' 分）。\n' +
+             '要么提品质 / 加菜品数 / 开优质服务，要么把目标降一点。')));
+      } else {
+        var one = restOne(d, hit.price, d.staff, restOv(null, occRaw / 100));
+        var bt1 = el('div', 'best');
+        bt1.appendChild(el('b', null, '要保持 ' + occRaw + '%，最高能定到：'));
+        bt1.appendChild(document.createTextNode(
+          '　$' + hit.price +
+          '　（这个价上需要评分 ' + (Math.round(hit.req * 100) / 100) +
+          '，你这份菜单有 ' + (Math.round(hit.have * 100) / 100) + '）'));
+        box.appendChild(bt1);
+        box.appendChild(el('div', 'sub',
+          '再往上定一块钱就保不住了：$' + (hit.price + 1) + ' 需要评分 ' +
+          (rowsT[hit.price + 1 - rowsT[0].price] &&
+           rowsT[hit.price + 1 - rowsT[0].price].req != null
+             ? (Math.round(rowsT[hit.price + 1 - rowsT[0].price].req * 100) / 100)
+             : '够不到') + '。\n' +
+          '顺带（不是这一屏的目标）：这个价上上菜 ' + one.served.toLocaleString() +
+          '，料 $' + cmpMoney(d.cur.cost) + '，工资 $' + cmpMoney(one.wage) +
+          '，这一轮 $' + cmpMoney(one.profit) + '。'));
+      }
+
+      /*
+       * 两条线：需要的评分 / 你有的评分。交点就是上面那个价。
+       * ⚠️ 两条【共用一个纵轴】（grp 一样）—— 各自缩放的话，
+       *    "在哪儿交叉"这件事会从图上直接消失，而两条线各自看都对。
+       */
+      var pts = function (k) {
+        return rowsT.filter(function (r) { return r[k] != null; })
+                    .map(function (r) { return { x: r.price, y: r[k] }; });
+      };
+      restLines(box, [
+        { n: '这个价位【需要】的评分', grp: 'r', c: '#facc15', pts: pts('req'),
+          fmt: function (v) { return String(Math.round(v * 100) / 100); } },
+        { n: '你这份菜单【有】的评分', grp: 'r', c: '#7dd3fc', pts: pts('have'),
+          fmt: function (v) { return String(Math.round(v * 100) / 100); } },
+      ], hit ? hit.price : null, '价格 →');
+      box.appendChild(el('div', 'sub',
+        '⚠️ 这一屏回答的是"怎么达到这个上座率"，**不是**"怎么最赚"。\n' +
+        '两条线方向相反：价格越高，需要的评分越高（价格罚），而你有的评分越低（价格分）。\n' +
+        '想问"怎么最赚"，把上座率那一格清空。'));
+      return;
+    }
+
+    /*
      * 三种情况，对应三张图。
      * ⚠️ 顺序是【空着几个】决定的，不是让人去挑图表类型 ——
      *    挑图表是让人替算法做决定，而他要的是"帮我算哪个最优"。
@@ -1912,6 +2686,27 @@
     if (!hasP && !hasR) {
       // 两个都空：价格 × 评分 的面
       var gd = restGrid(d, 40, 30);
+      /*
+       * ---- 你【够得到】的其实只有一条线，不是一整张面 ----
+       *
+       * ⚠️ 这一段是被问出来的："最赚的一格 评分 10 → $569,622"，
+       *    可他这份菜单根本到不了 10 —— 那个数是**永远拿不到的**。
+       *
+       *    评分那一轴从头到尾是【假设】（原来只在图底下用一行小字说了），
+       *    而顶上那句"这张面上最赚的一格"是**加粗的绿框**。
+       *    一个够不到的数摆在最显眼的位置、旁边一行小字说它是假设 ——
+       *    等于没说。而且现在旁边就是菜单穷举报出来的【真能拿到】的数，
+       *    两个一对，只会得出"这插件算错了"。
+       *
+       *    实际上给定菜单之后，每个价位上评分**只有一个值**（价格那一项在动）。
+       *    所以能拿到的是面上的一条曲线。把它画上去，
+       *    并且把绿框让给曲线上的最优点 —— 面上的最高点降级成"如果能到 N"。
+       */
+      var reach = restSweep(d, d.staff, ov);
+      var rBest = restBest(reach);
+      var rMax = 0;
+      reach.forEach(function (r) { if (r.rating > rMax) rMax = r.rating; });
+
       var tabs = el('div', 'tabs');
       [['heat', '热力图'], ['3d', '3D（可拖动）']].forEach(function (o) {
         var b = el('button', REST.view === o[0] ? 'on' : null, o[1]);
@@ -1919,25 +2714,47 @@
         tabs.appendChild(b);
       });
       box.appendChild(tabs);
-      if (REST.view === '3d') restSurf(box, gd); else restHeat(box, gd);
-      if (gd.top) {
+      if (REST.view === '3d') restSurf(box, gd); else restHeat(box, gd, reach);
+
+      if (rBest) {
         var bt = el('div', 'best');
-        bt.appendChild(el('b', null, '这张面上最赚的一格：'));
+        bt.appendChild(el('b', null, '你现在够得到的最优：'));
         bt.appendChild(document.createTextNode(
-          '　价格 $' + Math.round(gd.top.price) +
-          '　评分 ' + (Math.round(gd.top.rating * 100) / 100) +
-          '　这一轮 $' + cmpMoney(gd.top.profit)));
+          '　价格 $' + rBest.price +
+          '　评分 ' + (Math.round(rBest.rating * 100) / 100) +
+          '（你这份菜单在这个价上就是这个评分）' +
+          '　上座率 ' + (rBest.occ * 100).toFixed(1) + '%' +
+          '　这一轮 $' + cmpMoney(rBest.profit)));
         box.appendChild(bt);
       }
+      /*
+       * ⚠️ 面上那个最高点仍然报，但**必须写明它够不够得到**。
+       *    删掉它不对（"评分再高能多赚多少"是个真问题），
+       *    藏起来也不对 —— 图上那块最亮的地方就在那儿摆着。
+       */
+      if (gd.top) {
+        var hy = el('div', 'sub');
+        var gap = gd.top.rating - rMax;
+        hy.textContent = gap > 0.01
+          ? ('整张面上最高的一格是：价格 $' + Math.round(gd.top.price) +
+             '　评分 ' + (Math.round(gd.top.rating * 100) / 100) +
+             '　$' + cmpMoney(gd.top.profit) + '\n' +
+             '⚠️ 但那个评分你【现在到不了】—— 这份菜单最高只有 ' +
+             (Math.round(rMax * 100) / 100) + '（还差 ' +
+             (Math.round(gap * 100) / 100) + ' 分）。那一格问的是' +
+             '"如果评分能到那么高，该定多少钱"，不是一个你能去执行的方案。')
+          : ('整张面上最高的一格就在你够得到的范围里 —— 上面那个绿框就是它。');
+        box.appendChild(hy);
+      }
       box.appendChild(el('div', 'sub',
-        '评分那一轴是【假设】—— 它问的是"如果评分是 N，该定多少钱"。\n' +
-        '把评分那一格填上（或者留空让它按你的菜单算），就变成只扫价格的曲线。'));
+        '图上那条亮线 = 你这份菜单**实际**会走的路（每个价位上评分只有一个值）。\n' +
+        '线以外的地方全是假设：它问的是"如果评分是 N，该定多少钱"。'));
       return;
     }
 
     if (hasR && !hasP) {
       // 评分定死，只扫价格
-      restLinesWrap(box, d);
+      restLinesWrap(box, d, ratingOv);
       return;
     }
 
@@ -1953,7 +2770,8 @@
           fmt: function (v) { return '$' + cmpMoney(v); } },
       ], null, '评分 →');
       var now = RW('mapRestRating')({ menu: d.menu, price: Number(REST.price),
-                                       staff: d.staff, style: d.style });
+                                       staff: d.staff, style: d.style,
+                                       qsum: d.cur.qsum });
       box.appendChild(el('div', 'best',
         '你现在这份菜单算出来的评分是 ' + (Math.round(now.r * 100) / 100) +
         '，对应上座率 ' +
@@ -1962,7 +2780,7 @@
     }
 
     // 两个都填了：只报一个数
-    var one = restOne(d, Number(REST.price), d.staff);
+    var one = restOne(d, Number(REST.price), d.staff, ratingOv);
     box.appendChild(el('div', 'best',
       '价格 $' + REST.price + '：评分 ' + (Math.round(one.rating * 100) / 100) +
       '　上座率 ' + (one.occ * 100).toFixed(1) + '%　上菜 ' +
@@ -1971,9 +2789,11 @@
   }
 
   /** 只扫价格那一张：一档服务 or 两档一起比。 */
-  function restLinesWrap(box, d) {
+  function restLinesWrap(box, d, ov) {
     var archs = (REST.staff == null) ? [false, true] : [REST.staff];
-    var all = archs.map(function (st) { return { st: st, rows: restSweep(d, st) }; });
+    var all = archs.map(function (st) {
+      return { st: st, rows: restSweep(d, st, ov) };
+    });
     var COL = { p: '#7dd3fc', s: '#f0abfc' };
 
     var winner = null;
@@ -2026,7 +2846,7 @@
          *    所以直接量：拿两档在同一个价位上的评分差报出来。
          *    量出来的数永远和页面一致，页面改了它自己就跟着改。
          */
-        var dR = hi.rating - restOne(d, hi.price, false).rating;
+        var dR = hi.rating - restOne(d, hi.price, false, ov).rating;
         tip.textContent = '两档各自的最优：普通 $' + lo.price + ' → ' + cmpMoney(lo.profit) +
           '　优质 $' + hi.price + ' → ' + cmpMoney(hi.profit) +
           '　差 ' + cmpMoney(Math.abs(hi.profit - lo.profit)) +
