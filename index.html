@@ -398,6 +398,14 @@
   .mexcalc .cutv{color:var(--warn);font-size:11.5px}
   .mexgrow{font-size:11px;color:var(--ok)}
   .mrw{font-size:11.5px;color:var(--warn)}
+  .mrestwarn{margin:8px 0;padding:9px 12px;border-radius:9px;
+    border:1px solid var(--warn);background:rgba(250,204,21,.07);font-size:12px}
+  .mrestwarn b{display:block;margin-bottom:4px;color:var(--warn)}
+  .mrestwarn div{white-space:pre-wrap;line-height:1.6;color:var(--mut)}
+  .mrestmenu{margin:10px 0;padding:9px 11px;border:1px solid var(--line);
+    border-radius:9px}
+  .mrestacct{margin:10px 0;padding:9px 11px;border:1px solid var(--line);
+    border-radius:9px}
   .mu2{font-size:11.5px;color:var(--mut);white-space:pre-wrap;
     padding:7px 11px;line-height:1.55}
   .mexlock td{opacity:.55}
@@ -1392,7 +1400,7 @@ var DATA = './data';
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = '82cef964a340';
+var PAGE_BUILD = 'c3670e8567da';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -3018,6 +3026,7 @@ var MAP = (function () {
             sb0: 0, plv: 1,
             // adminPer 管理费分母：null = 用默认的 MAP_ADMIN_PER
             adminPer: null, econ: MAP_ECON_BASE, sat: {}, price: {},
+            rdraft: {}, rtraffic: null,
             cuPrice: null, pick: '', ev: [],
             sel: null, sell: null, item: null };
   try {
@@ -3046,6 +3055,8 @@ var MAP = (function () {
       d.econ = (Number(o.econ) === 0 || Number(o.econ) === 2) ? Number(o.econ) : MAP_ECON_BASE;
       if (o.sat && typeof o.sat === 'object') d.sat = o.sat;
       if (o.price && typeof o.price === 'object') d.price = o.price;
+      if (o.rdraft && typeof o.rdraft === 'object') d.rdraft = o.rdraft;
+      d.rtraffic = (Number(o.rtraffic) > 0) ? Number(o.rtraffic) : null;
       d.cuPrice = (o.cuPrice == null) ? null : Number(o.cuPrice);
       if (typeof o.pick === 'string') d.pick = o.pick;
       /*
@@ -3087,6 +3098,7 @@ function mapSave() {
         t0: MAP.t0, cur: MAP.cur, anchor: MAP.anchor, setupH: MAP.setupH,
         cash0: MAP.cash0, sb0: MAP.sb0, plv: MAP.plv,
         adminPer: MAP.adminPer, econ: MAP.econ, sat: MAP.sat, price: MAP.price,
+        rdraft: MAP.rdraft, rtraffic: MAP.rtraffic,
         cuPrice: MAP.cuPrice, pick: MAP.pick, ev: MAP.ev }));
   } catch (e) {}
 }
@@ -3189,7 +3201,7 @@ function mapReset() {
   MAP.t0 = mapDefaultT0();                 // 中国时间当天早上 9 点
   MAP.anchor = 0; MAP.cur = 0; MAP.setupH = 0;
   MAP.cash0 = MAP_CASH0; MAP.sb0 = 0; MAP.plv = 1; MAP.cuPrice = null;
-  MAP.econ = MAP_ECON_BASE; MAP.sat = {}; MAP.price = {};
+  MAP.econ = MAP_ECON_BASE; MAP.sat = {}; MAP.price = {}; MAP.rdraft = {};
   /*
    * ⚠️ MAP.adminPer 故意【不清】—— 它是"游戏是这么算的"，不是"这一局这么摆的"。
    *    工资那个口子清掉没事（默认值已经核实是对的，清了就回到对的）；
@@ -3816,6 +3828,322 @@ function mapQualityAt(id, H) {
 }
 
 
+
+/* ============================ 餐馆 ============================
+ *
+ * ⚠️⚠️ 这一块的可信度**分成两半**，界面上也分开标了：
+ *
+ *   🟢/🟡 数据表和消耗/工资公式  —— 来自官方客户端的餐馆表，可以信
+ *   🔵    评分与上座率          —— 官方放在服务端，bundle 里根本没有。
+ *                                 下面这套是【私服自己写的】，结构合理但
+ *                                 **数值不代表官方**。
+ *
+ * 不标出来的话，"评分 7.3"看着和别处那些校准过的数一样可信 ——
+ * 而它们根本不是一回事。
+ */
+var MAP_REST_BLD = '餐馆';
+var MAP_REST_CYCLE = 12;                    // 一个营业周期 12 小时
+var MAP_REST_PRICE_MIN = 60;
+var MAP_REST_PRICE_MAX = 350;
+var MAP_REST_SWEET = 96;                    // 价格甜点位（评分和上座率都看它）
+var MAP_REST_RATING_MAX = 10;
+var MAP_REST_STAFF_MUL = 5;                 // 优质服务：工资 x5
+var MAP_REST_REBUILD_H = 3;                 // 改装：每级 3 小时
+var MAP_REST_REBUILD_CASH = 44850;          // 改装：每级 $44,850
+var MAP_REST_STOP_DECAY = 0.875;            // 歇业结算一次，评分 x0.875
+var MAP_REST_VARIETY = [2.1, 1, 0.9, 0.8, 0.8, 0.8];
+var MAP_REST_SEATS = { eco: 1000, lux: 500 };   // 每级座位
+var MAP_REST_STYLE_WAGE = { eco: 1, lux: 0.5 };
+var MAP_REST_TRAFFIC = 50000;               // 🔵 "市场客流"官方没给，这是个占位
+
+/* 16 道菜，三组。系数越大 = 每周期吃得越多。 */
+var MAP_REST_MENU = [
+  { g: 'salad', gn: '沙拉吧', id: 117, c: 288 },
+  { g: 'salad', gn: '沙拉吧', id: 121, c: 24.89 },
+  { g: 'salad', gn: '沙拉吧', id: 134, c: 92.6 },
+  { g: 'salad', gn: '沙拉吧', id: 122, c: 38.196 },
+  { g: 'salad', gn: '沙拉吧', id: 119, c: 96.312 },
+  { g: 'salad', gn: '沙拉吧', id: 123, c: 16.667 },
+  { g: 'main',  gn: '主菜',   id: 129, c: 3.608 },
+  { g: 'main',  gn: '主菜',   id: 130, c: 4.073 },
+  { g: 'main',  gn: '主菜',   id: 131, c: 3.505 },
+  { g: 'main',  gn: '主菜',   id: 142, c: 9.402 },
+  { g: 'main',  gn: '主菜',   id: 143, c: 10.093 },
+  { g: 'main',  gn: '主菜',   id: 149, c: 9.2 },
+  { g: 'drink', gn: '饮品',   id: 132, c: 4.04 },
+  { g: 'drink', gn: '饮品',   id: 124, c: 144 },
+  { g: 'drink', gn: '饮品',   id: 125, c: 128.955 },
+  { g: 'drink', gn: '饮品',   id: 126, c: 113.984 },
+];
+var MAP_REST_GROUPS = ['salad', 'main', 'drink'];
+var MAP_REST_GNAME = { salad: '沙拉吧', main: '主菜', drink: '饮品' };
+
+function mapRestDish(id) {
+  var got = null;
+  MAP_REST_MENU.forEach(function (d) { if (d.id === Number(id)) got = d; });
+  return got;
+}
+/** 菜单里属于某一组的那几道。 */
+function mapRestGroup(menu, g) {
+  return (menu || []).filter(function (id) {
+    var d = mapRestDish(id); return d && d.g === g;
+  });
+}
+/** 三组是不是各至少一道 —— 开一轮的硬前提。 */
+function mapRestMenuOk(menu) {
+  return MAP_REST_GROUPS.every(function (g) { return mapRestGroup(menu, g).length > 0; });
+}
+
+/**
+ * 一个周期每样食材要多少（🟡）。
+ *
+ *   多样性系数 = [2.1, 1, 0.9, 0.8, 0.8, 0.8][同组道数 − 1]
+ *   需求量     = ceil(等级 x 系数 x 多样性 x 每级座位 / 1000)
+ *
+ * ⚠️ **多样性是餐馆最重要的一条**：一组只上 1 道菜要备 2.1 倍的量，
+ *    上到 2 道直接掉到 1.0，4 道以后就不再省了 —— 每组 4 道是拐点。
+ */
+function mapRestNeed(menu, lv, style) {
+  var seats = MAP_REST_SEATS[style === 'lux' ? 'lux' : 'eco'];
+  var out = [];
+  MAP_REST_GROUPS.forEach(function (g) {
+    var ids = mapRestGroup(menu, g);
+    var vi = Math.max(0, Math.min(MAP_REST_VARIETY.length - 1, ids.length - 1));
+    var vf = MAP_REST_VARIETY[vi];
+    ids.forEach(function (id) {
+      var d = mapRestDish(id);
+      out.push({ id: id, g: g, n: Math.ceil(lv * d.c * vf * seats / 1000), vf: vf });
+    });
+  });
+  return out;
+}
+/** 座位数。豪华只有一半（但食材也只吃一半）。 */
+function mapRestSeats(lv, style) {
+  return lv * MAP_REST_SEATS[style === 'lux' ? 'lux' : 'eco'];
+}
+/** 一个周期的工资（🟡）。行政开销和别处同一个 mapAdmin。 */
+function mapRestWage(lv, style, staff) {
+  return Math.ceil(345 * 1.7 * MAP_REST_STYLE_WAGE[style === 'lux' ? 'lux' : 'eco'] *
+                   lv * (1 + mapAdmin()) * MAP_REST_CYCLE *
+                   (staff ? MAP_REST_STAFF_MUL : 1));
+}
+
+/**
+ * 评分（🔵 私服自定，**不代表官方**）。
+ *
+ * ⚠️⚠️ 品质那一项是【品质 × 菜品数】—— 也就是**整张菜单的总品质**，
+ *      不是平均值，**也没有上限**。
+ *
+ *   我第一版读成了"平均品质，夹在 3 分封顶"。那样七项加起来最多 9.02，
+ *   于是最后那句 `clamp(总分, 0, 10)` **永远不会生效** —— 一句死代码。
+ *   「一个 clamp 永远不生效」本身就是读错了的信号：那个 10 不是摆设，
+ *   它就是这套公式真正的上限。
+ *
+ *   现在：3 道 Q6（总品质 18）→ 品质分 4.5，合计 9.3；
+ *         3 道 Q12（总品质 36）→ 品质分 9，合计 13.8 → 夹到 10。
+ *   要摸到 10 分，总品质至少 ~15.9。
+ *
+ *   于是"多上菜"和"提品质"是**相乘**的两件事：
+ *   16 道 Q1 和 1 道 Q16 在这一项上等价（都是 16）——
+ *   而多样分和三组齐全那条会把前者往上抬。
+ */
+function mapRestRating(o) {
+  if (!mapRestMenuOk(o.menu)) return { r: 0, parts: [], empty: true };
+  var qs = 0;
+  o.menu.forEach(function (id) { qs += mapQualityAt(id); });
+  var q = o.menu.length ? qs / o.menu.length : 0;
+  var price = Number(o.price) || 0;
+  var parts = [
+    { n: '品质', v: qs / MAP_Q_MAX * 3, max: null,
+      why: '总品质 ' + mnum(Math.round(qs * 10) / 10) + '（' + o.menu.length +
+           ' 道 × 平均 Q' + (Math.round(q * 10) / 10) + '）÷ 12 × 3　**没有上限**' },
+    { n: '多样', v: o.menu.length / 16 * 1.5, max: 1.5,
+      why: o.menu.length + ' 道 ÷ 16' },
+    { n: '服务', v: o.staff ? 2.5 : 1.25, max: 2.5,
+      why: o.staff ? '优质服务' : '普通服务（工资低 5 倍）' },
+    { n: '豪华', v: (o.style === 'lux') ? 0.5 : 0, max: 0.5,
+      why: (o.style === 'lux') ? '豪华装修' : '经济型' },
+    { n: '价格', v: price <= MAP_REST_SWEET ? 0.5
+        : Math.max(0, Math.min(0.5, 0.5 - (price - MAP_REST_SWEET) / 508)), max: 0.5,
+      why: price <= MAP_REST_SWEET ? ('≤ $' + MAP_REST_SWEET + '，满分')
+        : ('超出甜点位 $' + (Math.round((price - MAP_REST_SWEET) * 100) / 100)) },
+    { n: '沟通', v: Math.max(0, Math.min(100, mapExecPoints().fin.cm)) * 0.01, max: 1,
+      why: 'CMO 沟通 ' + mapExecPoints().fin.cm + ' 点' },
+    { n: '加成', v: mapSaleBonus() > 0 ? 0.02 : 0, max: 0.02,
+      why: mapSaleBonus() > 0 ? '有销售加成' : '没有销售加成' },
+  ];
+  var sum = 0;
+  parts.forEach(function (p) { sum += p.v; });
+  return { r: Math.max(0, Math.min(MAP_REST_RATING_MAX, sum)), parts: parts,
+           raw: sum, qsum: qs, q: q, empty: false,
+           capped: sum > MAP_REST_RATING_MAX };
+}
+/**
+ * 除了品质那一项，其余六项加满是多少（6.02）。
+ * 用来回答"我还差多少总品质才能摸到 10 分"。
+ */
+function mapRestOtherCap() {
+  var n = 0;
+  [1.5, 2.5, 0.5, 0.5, 1, 0.02].forEach(function (v) { n += v; });
+  return n;
+}
+/** 要把评分顶到 10，总品质至少要多少。 */
+function mapRestQNeed(o) {
+  var rt = mapRestRating(o);
+  if (rt.empty) return null;
+  var others = rt.raw - (rt.qsum / MAP_Q_MAX * 3);
+  return Math.max(0, (MAP_REST_RATING_MAX - others) / 3 * MAP_Q_MAX);
+}
+
+/**
+ * 上座率（🔵 私服自定）。
+ *
+ * ⚠️ competition 里那个"市场客流"官方没给任何数 ——
+ *    这里是个可改的占位（MAP.rtraffic），改它会整体挪动上座率。
+ *    不摆出来的话，这个凭空来的分母会伪装成一条算好的规则。
+ */
+function mapRestOcc(rating, price, otherSeats) {
+  var pricePenalty = Math.max(0, (Number(price) || 0) - MAP_REST_SWEET) / 500;
+  var traffic = Math.max(1, Number(MAP.rtraffic) || MAP_REST_TRAFFIC);
+  var comp = Math.max(0, Math.min(0.55, (otherSeats || 0) / traffic));
+  var occ = 0.08 + rating / 10 * 0.82 - pricePenalty - comp * 0.25;
+  return { occ: Math.max(0, Math.min(1, occ)), pen: pricePenalty, comp: comp };
+}
+
+/* ---- 事件：一次「开着的餐馆」，每 12 小时结算一轮 ----
+ *
+ * { t:'rest', h, k, price, style, staff, menu:[], off:null }
+ *
+ * ⚠️ 和休闲建筑的自动营业同一个路数：**不往时间轴里一轮一轮写事件**。
+ *    那样往回翻再往前跳会重复记账。这里一笔事件描述"从 h 起一直开着"，
+ *    第几轮、吃了多少料、发了多少工资，全部按 H 现算。
+ */
+function mapRestAt(k, H) {
+  var on = null;
+  mapEvOf(k, 'rest').forEach(function (e) {
+    if (e.h > H) return;
+    if (e.off != null && e.off <= H) { on = null; return; }
+    on = e;
+  });
+  return on;
+}
+/** 到 H 为止，这笔 rest 已经【开始】了几轮、已经【结算】了几轮。 */
+function mapRestCycles(e, H) {
+  var end = (e.off == null) ? H : Math.min(e.off, H);
+  if (end < e.h) return { started: 0, settled: 0, cur: null };
+  var started = Math.floor((end - e.h) / MAP_REST_CYCLE) + 1;
+  var settled = Math.floor((end - e.h) / MAP_REST_CYCLE);
+  if (e.off != null && e.off <= H) started = settled = Math.ceil((e.off - e.h) / MAP_REST_CYCLE);
+  var curFrom = e.h + settled * MAP_REST_CYCLE;
+  return { started: started, settled: settled,
+           cur: (e.off != null && e.off <= H) ? null
+                : { from: curFrom, to: curFrom + MAP_REST_CYCLE } };
+}
+/** 到 H 为止这栋餐馆歇过几次业（每次结算评分 x0.875）。 */
+function mapRestStops(k, H) {
+  var n = 0;
+  mapEvOf(k, 'rest').forEach(function (e) {
+    if (e.off != null && e.off <= H) n++;
+  });
+  return n;
+}
+
+/**
+ * 按【某一笔】rest 事件算这一栋的账。
+ *
+ * ⚠️ 歇业惩罚只数【这笔开张之前】已经歇过几次业。
+ *    数到 H 为止的话，今天关一次门，会把上个月那几轮已经收进账的营业额
+ *    追溯着打个折 —— 历史被改了，而屏幕上不会有任何一处说发生过什么。
+ */
+function mapRestAcct(x, e, H) {
+  var lv = mapLvAt(x, H);
+  var cyc = mapRestCycles(e, H);
+  var need = mapRestNeed(e.menu, lv, e.style);
+  var seats = mapRestSeats(lv, e.style);
+  var wage = mapRestWage(lv, e.style, e.staff);
+  var rt = mapRestRating(e);
+  var stops = 0;
+  mapEvOf(x.k, 'rest').forEach(function (o) {
+    if (o !== e && o.off != null && o.off <= e.h) stops++;
+  });
+  var decay = Math.pow(MAP_REST_STOP_DECAY, stops);
+  var rating = rt.r * decay;
+  var oc = mapRestOcc(rating, e.price, mapRestOtherSeats(x.k, H));
+  var served = Math.min(seats, Math.floor(seats * oc.occ));
+  return { e: e, lv: lv, cyc: cyc, need: need, seats: seats, wage: wage,
+           rt: rt, stops: stops, decay: decay, rating: rating, oc: oc,
+           served: served, spoiled: seats - served,
+           revenue: served * (Number(e.price) || 0) };
+}
+/** 一栋餐馆在第 H 小时的全部账。没开着就返回 null。 */
+function mapRestState(x, H) {
+  var h = (H === undefined) ? mapCur() : H;
+  var e = mapRestAt(x.k, h);
+  return e ? mapRestAcct(x, e, h) : null;
+}
+/** 本公司【其它】在营餐馆的座位数（competition 那一项）。 */
+function mapRestOtherSeats(k, H) {
+  var n = 0;
+  mapListAt(H).forEach(function (x) {
+    if (x.b !== MAP_REST_BLD || x.k === k) return;
+    var e = mapRestAt(x.k, H);
+    if (e) n += mapRestSeats(mapLvAt(x, H), e.style);
+  });
+  return n;
+}
+
+/** 开一轮 / 改设置。菜单三组各至少一道才让开。 */
+function mapRestStart(k, cfg) {
+  if (!mapCanEdit()) return;
+  var H = mapCur(), x = null;
+  mapListAt(H).forEach(function (b) { if (b.k === k) x = b; });
+  if (!x || x.b !== MAP_REST_BLD) return;
+  if (mapRestAt(k, H)) return;                  // 已经开着
+  if (mapRestRebuildAt(k, H)) return;           // 改装中
+  if (!mapRestMenuOk(cfg.menu)) return;         // 三组没齐
+  mapEv().push({ t: 'rest', h: H, k: k, off: null,
+                 price: Math.max(MAP_REST_PRICE_MIN,
+                          Math.min(MAP_REST_PRICE_MAX, Number(cfg.price) || MAP_REST_SWEET)),
+                 style: (cfg.style === 'lux') ? 'lux' : 'eco',
+                 staff: !!cfg.staff, menu: cfg.menu.slice() });
+  mapSave(); renderMap();
+}
+/** 排歇业：当前这一轮结算完就停。 */
+function mapRestStop(k) {
+  if (!mapCanEdit()) return;
+  var H = mapCur(), e = mapRestAt(k, H);
+  if (!e) return;
+  var c = mapRestCycles(e, H);
+  e.off = c.cur ? c.cur.to : H;                 // 停在这一轮结算那一刻
+  mapSave(); renderMap();
+}
+/** 改装：经济 <-> 豪华。 */
+function mapRestRebuild(k, to) {
+  if (!mapCanEdit()) return;
+  var H = mapCur(), x = null;
+  mapListAt(H).forEach(function (b) { if (b.k === k) x = b; });
+  if (!x || x.b !== MAP_REST_BLD) return;
+  if (mapRestAt(k, H) || mapRestRebuildAt(k, H)) return;   // 营业中/改装中都不行
+  var lv = mapLvAt(x, H);
+  mapEv().push({ t: 'rrec', h: H, k: k, to: (to === 'lux') ? 'lux' : 'eco',
+                 dur: lv * MAP_REST_REBUILD_H,
+                 cash: Math.ceil(MAP_REST_REBUILD_CASH * lv) });
+  mapSave(); renderMap();
+}
+function mapRestRebuildAt(k, H) {
+  var got = null;
+  mapEvOf(k, 'rrec').forEach(function (e) {
+    if (e.h <= H && H < e.h + e.dur) got = e;
+  });
+  return got;
+}
+/** 这栋餐馆在第 H 小时是什么装修（看最后一次改完的）。 */
+function mapRestStyle(k, H) {
+  var st = 'eco';
+  mapEvOf(k, 'rrec').forEach(function (e) { if (e.h + e.dur <= H) st = e.to; });
+  return st;
+}
+
 /* ============================ 零售模型 ============================
  *
  * 一条完整的闭式链，输入是【经济模型参数】（每资源 x 每经济档四个数）：
@@ -4130,6 +4458,19 @@ function mapStockAt(H) {
     } else if (e.t === 'sell' && e.h <= H) {
       take(e.item, e.units);
       if (e.trUnits > 0) take(MAP_TRANSPORT_ID, e.trUnits);
+    } else if (e.t === 'rest' && e.h <= H) {
+      /*
+       * 餐馆：**开局时一次性扣掉整轮的食材**（先付钱后收账）。
+       * 开了几轮就扣几轮 —— 轮数是算出来的，不是一轮写一笔事件。
+       */
+      var xr = null;
+      mapListAt(H).forEach(function (b) { if (b.k === e.k) xr = b; });
+      if (xr) {
+        var cy = mapRestCycles(e, H);
+        mapRestNeed(e.menu, mapLvAt(xr, H), e.style).forEach(function (u) {
+          take(u.id, u.n * cy.started);      // 开了几轮就扣几轮
+        });
+      }
     }
   });
   return m;
@@ -4264,6 +4605,22 @@ function mapEvCash(e, H) {
   if (e.t === 'up' || e.t === 'build') return -(e.cash || 0);
   if (e.t === 'buy') return -(e.units * e.price);
   if (e.t === 'prospect') return -(e.cash || 0);
+  if (e.t === 'rrec') return -(e.cash || 0);
+  if (e.t === 'rest') {
+    /*
+     * 餐馆的账：**工资在开轮那一刻付，营业额在结算那一刻进**。
+     * 所以一轮跑到一半看，现金是负的 —— 那是真的，不是算错。
+     *
+     * ⚠️ 这里只认【传进来的这一笔】事件，不去问"现在开着的是谁"。
+     *    开→关→再开会有好几笔 rest，用"现在开着的那笔"去算的话，
+     *    早先那几笔的账会被后来的设置重算一遍 —— 而每个数看着都正常。
+     */
+    var xr = null;
+    mapListAt(H).forEach(function (b) { if (b.k === e.k) xr = b; });
+    if (!xr) return 0;
+    var a = mapRestAcct(xr, e, H);
+    return -a.wage * a.cyc.started + a.revenue * a.cyc.settled;
+  }
   if (e.t === 'hire') return 0;
   return 0;
 }
@@ -6220,6 +6577,7 @@ function renderMapOne(box, x) {
       '（上面「计算器」那个模式里就有）。'));
     return;
   }
+  if (x.b === MAP_REST_BLD) { renderMapRest(box, x); return; }
   if (b.note === 'none') {
     box.appendChild(el('div', 'mempty', '没有就是没有。'));
     return;
@@ -6563,6 +6921,307 @@ function renderMapResearch(box) {
     '\n采矿类那 9 样影响的是产量，但那条走的是【丰度】，这里不重复乘。' +
     '\n圣诞树是唯一的累加器：每级 +' + MAP_ACC_PER_Q + '% 生产速度。'));
   box.appendChild(card);
+}
+
+
+/* ---- 餐馆那一屏 ---- */
+function mapRestDraft(k) {
+  MAP.rdraft = MAP.rdraft || {};
+  if (!MAP.rdraft[k]) {
+    MAP.rdraft[k] = { menu: [], price: MAP_REST_SWEET, staff: false };
+  }
+  return MAP.rdraft[k];
+}
+
+function renderMapRest(box, x) {
+  var H = mapCur();
+  var lv = mapLvNow(x);
+  var live = mapRestAt(x.k, H);
+  var rebuilding = mapRestRebuildAt(x.k, H);
+  var style = live ? live.style : mapRestStyle(x.k, H);
+  var dr = mapRestDraft(x.k);
+  var cfg = live || { menu: dr.menu, price: dr.price, staff: dr.staff, style: style };
+
+  /*
+   * ⚠️⚠️ 这一句必须在最上面，而且不能收起来。
+   *
+   *    餐馆的【数据表】是官方的，【评分和上座率】是私服自己写的 ——
+   *    官方把那两样放在服务端，前端 bundle 里根本没有。
+   *    不说的话，"评分 7.3"看着和这个页面上别处那些校准过的数一样可信，
+   *    而它们根本不是一回事。
+   */
+  var warn = el('div', 'mrestwarn');
+  warn.appendChild(el('b', null, '⚠️ 这一屏有两种可信度，别混着看'));
+  warn.appendChild(el('div', null,
+    '🟢 食材消耗、多样性系数、座位、工资、周期、改装费 —— 官方客户端的餐馆表，可以信。\n' +
+    '🔵 评分、上座率、$96 那个甜点位 —— 官方放在服务端，bundle 里没有。' +
+    '下面这套是私服自己写的，**结构合理但数值不代表官方**。'));
+  box.appendChild(warn);
+
+  // ---- 状态 ----
+  var st = live ? mapRestAcct(x, live, H) : null;
+  var bar = el('div', 'mabbox');
+  bar.appendChild(el('span', 'ml', '状态'));
+  bar.appendChild(el('span', 'v', rebuilding ? '改装中'
+    : (live ? (live.off != null ? '已排歇业' : '营业中') : '歇业')));
+  if (rebuilding) {
+    bar.appendChild(el('span', 'mu', '还有 ' +
+      (rebuilding.h + rebuilding.dur - H) + ' 小时　改成' +
+      (rebuilding.to === 'lux' ? '豪华' : '经济型')));
+    var jb = el('button', 'btn', '跳到结束');
+    jb.onclick = function () { mapGoTo(rebuilding.h + rebuilding.dur); };
+    bar.appendChild(jb);
+  } else if (st) {
+    bar.appendChild(el('span', 'mu',
+      '第 ' + st.cyc.started + ' 轮' +
+      (st.cyc.cur ? ('，这一轮 ' + st.cyc.cur.from + '→' + st.cyc.cur.to +
+                     ' 小时（还有 ' + (st.cyc.cur.to - H) + ' 小时结算）') : '') +
+      '　已结算 ' + st.cyc.settled + ' 轮'));
+    if (st.cyc.cur) {
+      var jb2 = el('button', 'btn', '跳到结算');
+      jb2.onclick = function () { mapGoTo(st.cyc.cur.to); };
+      bar.appendChild(jb2);
+    }
+  } else {
+    bar.appendChild(el('span', 'mu',
+      '一轮 ' + MAP_REST_CYCLE + ' 小时。开轮时【一次性扣掉整轮的食材和工资】，' +
+      '结算那一刻才收营业额 —— 所以中途看现金是负的，那是真的。'));
+  }
+  box.appendChild(bar);
+
+  // ---- 装修 ----
+  var sb = el('div', 'mabbox');
+  sb.appendChild(el('span', 'ml', '装修'));
+  sb.appendChild(el('span', 'v', style === 'lux' ? '豪华' : '经济型'));
+  sb.appendChild(el('span', 'mu',
+    '座位 ' + mnum(mapRestSeats(lv, style)) + '（每级 ' +
+    MAP_REST_SEATS[style === 'lux' ? 'lux' : 'eco'] + '）　工资 x' +
+    MAP_REST_STYLE_WAGE[style === 'lux' ? 'lux' : 'eco'] +
+    '　评分 +' + (style === 'lux' ? '0.5' : '0')));
+  var to = (style === 'lux') ? 'eco' : 'lux';
+  var rb = el('button', 'btn', '改装成' + (to === 'lux' ? '豪华' : '经济型') +
+    '（' + mmoney(Math.ceil(MAP_REST_REBUILD_CASH * lv)) + '，' +
+    (lv * MAP_REST_REBUILD_H) + ' 小时）');
+  rb.disabled = !mapCanEdit() || !!live || !!rebuilding;
+  rb.onclick = function () { mapRestRebuild(x.k, to); };
+  sb.appendChild(rb);
+  /*
+   * 豪华是【一半座位、一半食材、一半工资、+0.5 评分】——
+   * 四样一起变，只写"更贵更高级"没法判断划不划算。
+   */
+  if (live) sb.appendChild(el('span', 'mu', '（营业中改不了，先歇业）'));
+  box.appendChild(sb);
+
+  // ---- 菜单 ----
+  var mb = el('div', 'mrestmenu');
+  mb.appendChild(el('div', 'mrl',
+    (function () { var e2 = el('span', 'mrn', '菜单'); return e2; })()));
+  MAP_REST_GROUPS.forEach(function (g) {
+    var row = el('div', 'mrl');
+    var picked = mapRestGroup(cfg.menu, g);
+    var vi = Math.max(0, Math.min(MAP_REST_VARIETY.length - 1, picked.length - 1));
+    row.appendChild(el('span', 'mrn', MAP_REST_GNAME[g]));
+    row.appendChild(el('span', picked.length ? 'mrh' : 'mrw',
+      picked.length ? (picked.length + ' 道') : '一道都没选（开不了轮）'));
+    /*
+     * ⚠️ 多样性系数摆在每一组旁边 —— 这是餐馆最重要的一条：
+     *    一组只上 1 道菜，每道要备 **2.1 倍**的量；上到 2 道直接掉到 1.0；
+     *    4 道以后就不再省了。不摆出来的话，"我少上一道菜怎么反而更贵"
+     *    在这一屏上完全没有线索。
+     */
+    if (picked.length) {
+      row.appendChild(el('span', 'mu', '用料系数 x' + MAP_REST_VARIETY[vi] +
+        (picked.length === 1 ? '　← 独苗最贵，加一道就掉到 1.0' :
+         (picked.length < 4 ? '　（每组 4 道是拐点）' : '　已经到底了'))));
+    }
+    var chips = el('div', 'mpick');
+    MAP_REST_MENU.filter(function (d) { return d.g === g; }).forEach(function (d) {
+      var on = cfg.menu.indexOf(d.id) >= 0;
+      var bt = el('button', on ? 'on' : null);
+      bt.appendChild(el('span', null, mapName(d.id)));
+      bt.appendChild(el('span', 'pr', '系数 ' + d.c));
+      var q = mapQualityAt(d.id);
+      if (q) bt.appendChild(el('span', 'pr', 'Q' + q));
+      var have = mapStock(d.id);
+      if (!have) bt.appendChild(el('span', 'pw', '仓库里没有'));
+      bt.disabled = !!live || !mapCanEdit();
+      bt.onclick = function () {
+        var i = dr.menu.indexOf(d.id);
+        if (i >= 0) dr.menu.splice(i, 1); else dr.menu.push(d.id);
+        mapSave(); renderMap();
+      };
+      chips.appendChild(bt);
+    });
+    mb.appendChild(row);
+    mb.appendChild(chips);
+  });
+  box.appendChild(mb);
+
+  // ---- 价格 / 服务 ----
+  var pb = el('div', 'mabbox');
+  pb.appendChild(el('span', 'ml', '菜单价'));
+  pb.appendChild(mIn(cfg.price, String(MAP_REST_SWEET), function (v) {
+    var n = Math.max(MAP_REST_PRICE_MIN,
+                     Math.min(MAP_REST_PRICE_MAX, Number(v) || MAP_REST_SWEET));
+    dr.price = n; mapSave(); renderMap();
+  }, '80px'));
+  pb.appendChild(el('span', 'mu',
+    '$' + MAP_REST_PRICE_MIN + '~$' + MAP_REST_PRICE_MAX + '　'));
+  /*
+   * ⚠️ $96 在评分和上座率里【各扣一次】 —— 超过甜点位是双重惩罚。
+   *    只在一处提的话，会以为定高一点只是少点评分。
+   */
+  pb.appendChild(el('span', Number(cfg.price) > MAP_REST_SWEET ? 'mrw' : 'mu',
+    Number(cfg.price) <= MAP_REST_SWEET
+      ? ('≤ $' + MAP_REST_SWEET + '：价格分拿满，上座率不扣')
+      : ('⚠️ 超过 $' + MAP_REST_SWEET + '：评分【和】上座率【各扣一次】')));
+  var stb = el('button', 'btn', cfg.staff ? '优质服务：开' : '优质服务：关');
+  stb.disabled = !!live || !mapCanEdit();
+  stb.onclick = function () { dr.staff = !dr.staff; mapSave(); renderMap(); };
+  pb.appendChild(stb);
+  pb.appendChild(el('span', 'mu',
+    '工资 x' + MAP_REST_STAFF_MUL + '，换评分 1.25 → 2.5　—— 餐馆最大的一笔取舍'));
+  box.appendChild(pb);
+
+  // ---- 这一轮的账 ----
+  var need = mapRestNeed(cfg.menu, lv, style);
+  var wage = mapRestWage(lv, style, cfg.staff);
+  var rt = mapRestRating(cfg);
+  var stops = st ? st.stops : 0;
+  var rating = rt.r * Math.pow(MAP_REST_STOP_DECAY, stops);
+  var seats = mapRestSeats(lv, style);
+  var oc = mapRestOcc(rating, cfg.price, mapRestOtherSeats(x.k, H));
+  var served = Math.min(seats, Math.floor(seats * oc.occ));
+
+  var acc = el('div', 'mrestacct');
+  var cost = 0, miss = [];
+  need.forEach(function (u) {
+    var g = mapStock(u.id);
+    if (!g || g.q < u.n) miss.push(u);
+    if (g) cost += g.c * u.n;
+  });
+  var rows = [
+    ['座位', mnum(seats), '等级 ' + lv + ' x 每级 ' +
+      MAP_REST_SEATS[style === 'lux' ? 'lux' : 'eco']],
+    ['评分 🔵', (Math.round(rating * 100) / 100) + ' / ' + MAP_REST_RATING_MAX,
+      rt.empty ? '三个分组各要至少一道菜，现在评分是 0'
+        : ((rt.capped
+            ? ('七项原始 ' + (Math.round(rt.raw * 100) / 100) + '，已经顶到 10 了')
+            : ('还差 ' + (Math.round((mapRestQNeed(cfg) - rt.qsum) * 10) / 10) +
+               ' 点总品质才能顶到 10（现在总品质 ' +
+               mnum(Math.round(rt.qsum * 10) / 10) + '）')) +
+           (stops ? ('　歇业过 ' + stops + ' 次，×' +
+             (Math.round(Math.pow(MAP_REST_STOP_DECAY, stops) * 1000) / 1000)) : ''))],
+    ['上座率 🔵', (Math.round(oc.occ * 1000) / 10) + '%',
+      '0.08 + 评分/10x0.82 − 价格罚 ' + (Math.round(oc.pen * 1000) / 1000) +
+      ' − 同行挤占 ' + (Math.round(oc.comp * 1000) / 1000) + 'x0.25'],
+    ['这一轮上菜', mnum(served) + ' 份',
+      '浪费 ' + mnum(seats - served) + ' 份 —— ⚠️ 备的量是【按满座】算的，' +
+      '没坐满的那些直接倒掉，不回收'],
+    ['食材成本', mmoney(cost), miss.length
+      ? ('⚠️ 有 ' + miss.length + ' 样不够：' +
+         miss.map(function (u) { return mapName(u.id); }).join('、'))
+      : '仓库里够'],
+    ['工资', mmoney(wage), '345 x 1.7 x ' +
+      MAP_REST_STYLE_WAGE[style === 'lux' ? 'lux' : 'eco'] + ' x ' + lv +
+      ' 级 x 管理 ' + (Math.round((1 + mapAdmin()) * 1000) / 1000) +
+      ' x ' + MAP_REST_CYCLE + ' 小时' + (cfg.staff ? ' x 5' : '')],
+    ['营业额', mmoney(served * cfg.price), mnum(served) + ' x $' + cfg.price],
+  ];
+  rows.forEach(function (r) {
+    var line = el('div', 'mrl');
+    line.appendChild(el('span', 'mrn', r[0]));
+    line.appendChild(el('span', 'mrh', r[1]));
+    line.appendChild(el('span', 'mu', r[2]));
+    acc.appendChild(line);
+  });
+  var profit = served * cfg.price - cost - wage;
+  var pl = el('div', 'mrl');
+  pl.appendChild(el('span', 'mrn', '这一轮'));
+  pl.appendChild(el('span', profit >= 0 ? 'mrh' : 'mrw',
+    (profit >= 0 ? '赚 ' : '亏 ') + mmoney(Math.abs(profit))));
+  pl.appendChild(el('span', 'mu', '营业额 − 食材 − 工资　（' +
+    mnum(Math.round(profit / MAP_REST_CYCLE)) + ' / 小时）'));
+  acc.appendChild(pl);
+  box.appendChild(acc);
+
+  // ---- 评分拆解 ----
+  if (!rt.empty) {
+    var rb2 = el('div', 'mexcalc');
+    var ch = el('div', 'r');
+    ch.appendChild(el('span', 'nm', '评分 🔵'));
+    ch.appendChild(el('span', 'eq',
+      '七项相加，夹在 10。⚠️ 品质那一项是【总品质 = 道数 × 品质】，没有上限'));
+    rb2.appendChild(ch);
+    rt.parts.forEach(function (p) {
+      var r = el('div', 'r');
+      r.appendChild(el('span', 'nm', p.n));
+      r.appendChild(el('span', 'eq', p.why));
+      // 品质那一项【没有上限】，写个 "/ 3" 会骗人
+      r.appendChild(el('span', 'fin', (Math.round(p.v * 100) / 100) +
+        (p.max == null ? '' : (' / ' + p.max))));
+      rb2.appendChild(r);
+    });
+    var rsum = el('div', 'r');
+    rsum.appendChild(el('span', 'nm', '合计'));
+    rsum.appendChild(el('span', 'eq', rt.capped
+      ? ('原始 ' + (Math.round(rt.raw * 100) / 100) + ' → 夹到上限 10')
+      : '七项相加'));
+    rsum.appendChild(el('span', 'fin', String(Math.round(rt.r * 100) / 100)));
+    rb2.appendChild(rsum);
+    box.appendChild(rb2);
+  }
+
+  // ---- 市场客流：那个凭空来的分母 ----
+  var tb2 = el('div', 'mabbox');
+  tb2.appendChild(el('span', 'ml', '市场客流 🔵'));
+  tb2.appendChild(mIn(MAP.rtraffic == null ? '' : MAP.rtraffic,
+                      String(MAP_REST_TRAFFIC), function (v) {
+    var n = Number(v);
+    MAP.rtraffic = (v === '' || !isFinite(n) || n <= 0) ? null : n;
+    mapSave(); renderMap();
+  }, '96px'));
+  /*
+   * ⚠️ 这个分母官方【一个数都没给】。摆出来是为了让人知道它是编的 ——
+   *    藏在代码里的话，它会伪装成一条算好的规则。
+   */
+  tb2.appendChild(el('span', 'mu',
+    '同行挤占 = 本公司其它在营餐馆座位 ÷ 这个数（夹在 0.55）。' +
+    '官方一个数都没给，这里是占位 —— 改它会整体挪动上座率。' +
+    '　你其它餐馆现在占 ' + mnum(mapRestOtherSeats(x.k, H)) + ' 座'));
+  box.appendChild(tb2);
+
+  // ---- 开 / 停 ----
+  var ab = el('div', 'mbtns');
+  if (!live) {
+    var okMenu = mapRestMenuOk(cfg.menu);
+    var go = el('button', 'btn pri', '开始营业（' + MAP_REST_CYCLE + ' 小时一轮）');
+    go.disabled = !mapCanEdit() || !okMenu || !!rebuilding;
+    go.onclick = function () {
+      mapRestStart(x.k, { menu: cfg.menu, price: cfg.price,
+                          staff: cfg.staff, style: style });
+    };
+    ab.appendChild(go);
+    if (!okMenu) {
+      ab.appendChild(el('span', 'mrw',
+        '沙拉吧 / 主菜 / 饮品【每组至少一道】才开得了轮'));
+    } else if (miss.length) {
+      // 料不够也让开 —— 和别处一致：说出来，但不替他决定
+      ab.appendChild(el('span', 'mrw',
+        '⚠️ 食材不够，开了会把仓库扣成负的'));
+    }
+  } else if (live.off == null) {
+    var sp = el('button', 'btn', '这一轮结算完就歇业');
+    sp.disabled = !mapCanEdit();
+    sp.onclick = function () { mapRestStop(x.k); };
+    ab.appendChild(sp);
+    ab.appendChild(el('span', 'mu',
+      '开着就会一轮接一轮自动续 —— 每轮都重新扣食材和工资。' +
+      '歇业结算那一次评分 x' + MAP_REST_STOP_DECAY + '。'));
+  } else {
+    ab.appendChild(el('span', 'mu', '已排在第 ' + live.off + ' 小时歇业。'));
+  }
+  box.appendChild(ab);
 }
 
 /**
