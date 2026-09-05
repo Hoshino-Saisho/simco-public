@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sim Companies 聊天存档 · 词频统计
 // @namespace    https://github.com/Hoshino-Saisho/simco-public
-// @version      1.16.0
+// @version      1.17.0
 // @description  聊天存档增强：① 词频统计（按小时/天/发送者/房间，支持排除词、强弱词三档、自定时区、图标码转名字、导出 CSV）② 销售办公室合同对比 —— 把多张单子并排摆开，比时利和利润率 ③ 餐馆优化器 —— 扫价格/服务/评分，画曲线和热力图，直接指出利润最高那一档
 // @author       —
 // @match        https://simco-chat.cc.cd/*
@@ -1496,7 +1496,7 @@
    * ⚠️ 查"到底该更新哪一边"的时候，两边的版本必须【同时】看得见 ——
    *    只报页面指纹的话，会漏掉"插件没更新"这一半。
    */
-  var SCS_VER = '1.16.0';
+  var SCS_VER = '1.17.0';
 
   var REST_FN = ['MAP', 'mapCur', 'mapListAt', 'mapLvNow', 'mapStock', 'mapStockQ',
                  'mapStockQFor', 'mapQBlend', 'MAP_Q_MAX',
@@ -1550,7 +1550,7 @@
    */
   var REST = { price: '', rating: '', occ: '', staff: null,
                view: 'heat', yaw: -0.6, pitch: 0.9, grid: null,
-               showQ: false, optMenu: false, menuRun: null };
+               showQ: false, optMenu: false, menuRun: null, qGo: false };
 
   /*
    * ---- 自设定的那几项，打包成一个 ov 传下去 ----
@@ -1995,7 +1995,16 @@
    * 逐道菜推一遍就完事，比穷举菜单便宜得多。
    */
   var RESTQ_STEP = 10;                    // 总品质 ×10 取整
-  function restQPlan(d, m, price, staff) {
+  var RESTQ_BUDGET = 4000;                // 组合 × 价位 超过这个数就先问一句
+
+  /**
+   * 第一步：「总品质 → 最少要花多少料钱」的那张表。
+   *
+   * ⚠️ 这张表【和价格无关】—— 每一档的品质和单价都不含价格。
+   *    这一点是后面能"严格算"的全部本钱：表推一次，
+   *    291 个价位共用同一张，不用把 DP 乘 291 遍。
+   */
+  function restQFrontier(d, m) {
     var ids = m.menu, i;
     var opts = [];
     for (i = 0; i < ids.length; i++) {
@@ -2007,9 +2016,8 @@
     }
     /*
      * chain[i] = 前 i 道菜推完之后，「总品质 → 最省的那条路」。
-     * ⚠️ 路径要边推边记（prev + pick），不能只留最后一层再倒推 ——
-     *    只留最后一层的话，回溯时得把 DP 再推一遍，
-     *    两遍之间但凡有一点不一致（比如同价位取谁），
+     * ⚠️ 路径边推边记（prev + pick）。只留最后一层再倒推的话，
+     *    回溯要把 DP 再推一遍，两遍之间但凡有一点不一致（比如同价位取谁），
      *    报出来的配法就和报出来的钱对不上，而两边各自看都对。
      */
     var chain = [{ 0: { cost: 0, prev: null, pick: null } }];
@@ -2028,29 +2036,117 @@
       chain.push(nx);
     }
     var last = chain[ids.length];
-    var wage = RW('mapRestWage')(d.lv, d.style, staff);
-    var best = null, all = [];
-    Object.keys(last).forEach(function (k) {
-      var qsum = Number(k) / RESTQ_STEP;
-      var rt = RW('mapRestRating')({ menu: ids, price: price, staff: staff,
-                                     style: d.style, qsum: qsum });
-      var oc = RW('mapRestOcc')(rt.r, price, d.other);
-      var served = Math.min(d.seats, Math.floor(d.seats * oc.occ));
-      var row = { qsum: qsum, cost: last[k].cost, rating: rt.r, occ: oc.occ,
-                  served: served, key: Number(k),
-                  profit: served * price - last[k].cost - wage };
-      all.push(row);
-      if (!best || row.profit > best.profit) best = row;
-    });
-    if (!best) return { err: '一种配得起来的品质组合都没有。' };
-    var picks = [], k2 = best.key;
-    for (i = ids.length; i > 0; i--) {
-      var node = chain[i][k2];
-      picks.unshift({ id: ids[i - 1], opt: node.pick });
-      k2 = node.prev;
+    var raw = Object.keys(last).map(function (k) {
+      return { key: Number(k), qsum: Number(k) / RESTQ_STEP, cost: last[k].cost };
+    }).sort(function (a, b) { return a.qsum - b.qsum; });
+
+    /*
+     * ---- 把【被支配】的那些扔掉 ----
+     *
+     * 品质更低、料钱还更贵的组合，永远不可能是答案（利润对品质单调增、
+     * 对料钱单调减），所以扔掉它们【不损失任何最优解】。
+     *
+     * ⚠️ 这不是近似，是精确剪枝 —— 而且它是"严格扫完 291 个价位"能跑得动的原因：
+     *    1900 多个状态常常能剪到几十个，291 × 几十才是几万次，秒级以内。
+     *    不剪的话是 291 × 1900 ≈ 55 万次评分调用，跑起来要半分钟，
+     *    然后我就又会想找个理由只算一个价位 —— 那正是这次要修掉的毛病。
+     */
+    var keep = [], minCost = Infinity;
+    for (i = raw.length - 1; i >= 0; i--) {
+      if (raw[i].cost < minCost) { keep.unshift(raw[i]); minCost = raw[i].cost; }
     }
-    all.sort(function (a, b) { return a.qsum - b.qsum; });
-    return { best: best, picks: picks, all: all, opts: opts };
+    return { states: keep, all: raw, chain: chain, opts: opts, ids: ids };
+  }
+  /** 从边界上某一格回溯出每道菜挑了哪一档。 */
+  function restQPicks(fr, key) {
+    var picks = [], k = key;
+    for (var i = fr.ids.length; i > 0; i--) {
+      var node = fr.chain[i][k];
+      picks.unshift({ id: fr.ids[i - 1], opt: node.pick });
+      k = node.prev;
+    }
+    return picks;
+  }
+
+  /**
+   * 第二步：**价格和品质一起解**。
+   *
+   * ⚠️ 上一版这里写死了一个探测价（$96），然后在屏幕上留了一句
+   *    "价格换了挑法也会变"。那是**拿一行注释把问题绕过去** ——
+   *    价格恰恰是决定"多一分评分值多少钱"的那个量，
+   *    $96 和 $350 上一分总品质差着三倍多，挑法整个不一样。
+   *    现在把 291 个价位全扫，和品质边界叉乘，取真正的最优。
+   *
+   * 价格那一格填了就只算那一个价（那是你定死的条件，不是待解的量）。
+   */
+  function restQPlan(d, m, staff, ov, priceFixed) {
+    var fr = restQFrontier(d, m);
+    if (fr.err) return fr;
+    var lo = RW('MAP_REST_PRICE_MIN'), hi = RW('MAP_REST_PRICE_MAX');
+    var prices = [];
+    if (priceFixed != null) prices.push(priceFixed);
+    else for (var p = lo; p <= hi; p++) prices.push(p);
+    var wage = RW('mapRestWage')(d.lv, d.style, staff);
+    var occFix = OVO(ov);
+
+    var best = null;
+    fr.states.forEach(function (st) {
+      prices.forEach(function (pr) {
+        var rating, occ;
+        if (occFix != null) {
+          /*
+           * 钉了上座率时问的是【能不能保住】，不是利润 ——
+           * 保不住的价位直接不算数（和反解那一屏一个口径）。
+           */
+          var req = restImpliedRating(d, pr, occFix);
+          if (req.err) return;
+          var have = RW('mapRestRating')({ menu: fr.ids, price: pr, staff: staff,
+                                           style: d.style, qsum: st.qsum }).r;
+          if (have < req.rating - 1e-9) return;
+          rating = have; occ = occFix;
+        } else {
+          rating = RW('mapRestRating')({ menu: fr.ids, price: pr, staff: staff,
+                                         style: d.style, qsum: st.qsum }).r;
+          occ = RW('mapRestOcc')(rating, pr, d.other).occ;
+        }
+        var served = Math.min(d.seats, Math.floor(d.seats * occ));
+        var row = { qsum: st.qsum, key: st.key, cost: st.cost, price: pr,
+                    rating: rating, occ: occ, served: served,
+                    profit: served * pr - st.cost - wage };
+        /*
+         * ⚠️ 一律按【利润】挑，钉不钉上座率都一样。
+         *
+         *    我原来给"钉了上座率"写了个特判，改成按【最高价】挑。
+         *    但钉死上座率之后上菜数是固定的，利润 = 上菜数 × 价格 − 料 − 工资 ——
+         *    价格越高利润越高，**它自己就会走到最高的那个可行价**，
+         *    而且顺带还把料钱算进去了（同价位当然挑便宜的那套）。
+         *    那个特判等于用一个更差的口径重写了同一件事。
+         *
+         *    上面那句"钉死上座率再求利润最大必然顶到最高价"在【反解那一屏】
+         *    是个废答案，因为那里价格是自由的；这里价格被"保得住目标"卡着，
+         *    所以不会退化。两屏问的不是同一个问题。
+         */
+        if (!best || row.profit > best.profit) best = row;
+      });
+    });
+    if (!best) {
+      return { err: occFix != null
+        ? ('没有一种品质配法能在任何价位上保住 ' + (occFix * 100).toFixed(1) + '%。')
+        : '一种配得起来的品质组合都没有。' };
+    }
+    // 对比用：在【选出来的那个价】上，把整条边界重算一遍
+    var atBest = fr.states.map(function (st) {
+      var rt = RW('mapRestRating')({ menu: fr.ids, price: best.price, staff: staff,
+                                     style: d.style, qsum: st.qsum }).r;
+      var oc = (occFix != null) ? occFix : RW('mapRestOcc')(rt, best.price, d.other).occ;
+      var sv = Math.min(d.seats, Math.floor(d.seats * oc));
+      return { qsum: st.qsum, cost: st.cost, rating: rt, occ: oc, served: sv,
+               key: st.key, price: best.price,
+               profit: sv * best.price - st.cost - wage };
+    });
+    return { best: best, picks: restQPicks(fr, best.key), all: atBest,
+             opts: fr.opts, states: fr.states, allStates: fr.all, pruned: fr.all.length,
+             swept: prices.length, priceFixed: priceFixed != null };
   }
   /** 把一份挑好的品质配法，装回 restOne 认的那种 m。 */
   function restQAsM(m, plan) {
@@ -2354,7 +2450,6 @@
    *    现在真的挑：每道菜该用哪一档，整张菜单一起算。
    */
   function restQPanel(box, d, ov, hasP) {
-    var price = hasP ? Number(REST.price) : 96;
     var staff = !!d.staff;
 
     /*
@@ -2370,19 +2465,55 @@
       '不是"这一轮点哪个按钮"。\n' +
       '把用不上的高档货囤在某道菜上，等于白花那份料钱。'));
 
-    var plan = restQPlan(d, d.cur, price, staff);
+    /*
+     * ---- 先看要算多少，再决定用不用先点一下 ----
+     *
+     * ⚠️ 这块面板是**每次重画都跑**的（不像菜单穷举那样藏在按钮后面）。
+     *    291 个价位 × 上千种品质组合是几十万次评分调用 —— 好几秒，
+     *    而且是每改一个数就来一次。那样人会以为插件坏了。
+     *
+     * ⚠️ 但也不能一律要求先点：仓里每样菜只有一档货时，
+     *    边界只有一格，算起来是一瞬间的事，还要点一下纯属添堵。
+     *    所以按【真实工作量】决定 —— 建边界那一步不调任何评分，很便宜，
+     *    所以可以先建出来再看要不要拦。
+     */
+    var frq = restQFrontier(d, d.cur);
+    if (frq.err) { box.appendChild(el('div', 'warn', frq.err)); return; }
+    var nPrice = hasP ? 1 : (RW('MAP_REST_PRICE_MAX') - RW('MAP_REST_PRICE_MIN') + 1);
+    var work = frq.states.length * nPrice;
+    if (work > RESTQ_BUDGET && !REST.qGo) {
+      var gb = el('div', 'free');
+      gb.appendChild(el('span', null,
+        '这一局要算 ' + frq.states.length + ' 种品质组合 × ' + nPrice +
+        ' 个价位 = ' + work.toLocaleString() + ' 次试算，得几秒。'));
+      var gbtn = el('button', null, '开始严格算');
+      gbtn.onclick = function () { REST.qGo = true; restRender(); };
+      gb.appendChild(gbtn);
+      box.appendChild(gb);
+      box.appendChild(el('div', 'sub',
+        '⚠️ 不自动跑是因为这块面板每重画一次就会跑一次 —— ' +
+        '改一个数卡几秒，会让人以为插件坏了。\n' +
+        '把价格那一格填上也行：价格定死之后只剩 ' + frq.states.length +
+        ' 次试算，会自动算。'));
+      return;
+    }
+
+    var plan = restQPlan(d, d.cur, staff, ov, hasP ? Number(REST.price) : null);
     if (plan.err) { box.appendChild(el('div', 'warn', plan.err)); return; }
 
     var b = plan.best;
+    var price = b.price;
     var bt = el('div', 'best');
-    bt.appendChild(el('b', null, '最划算的品质配法：'));
+    bt.appendChild(el('b', null, plan.priceFixed
+      ? '最划算的品质配法（按你填的 $' + price + '）：'
+      : '最划算的【品质 + 价格】：'));
     bt.appendChild(document.createTextNode(
+      '　价格 $' + price +
       '　总品质 ' + (Math.round(b.qsum * 10) / 10) +
       '　评分 ' + (Math.round(b.rating * 100) / 100) +
       '　上座率 ' + (b.occ * 100).toFixed(1) + '%' +
       '　料 $' + cmpMoney(b.cost) +
-      '　这一轮 $' + cmpMoney(b.profit) +
-      '（按 $' + price + ' 算）'));
+      '　这一轮 $' + cmpMoney(b.profit)));
     box.appendChild(bt);
 
     /*
@@ -2439,9 +2570,22 @@
       ? ('标出来那 ' + down + ' 道菜【最高的那一档不划算】—— ' +
          '多出来的品质换来的评分，不够抵那一档多花的料钱。')
       : '每道菜都是最高那一档最划算 —— 这一局里高品质确实值那个价。'));
-    box.appendChild(el('div', 'sub',
-      '⚠️ 这一屏按 $' + price + ' 算的。价格换了，"多一分评分值多少钱"就变了，' +
-      '挑法也会跟着变 —— 把价格那一格填上可以定死它。'));
+    /*
+     * ⚠️ 上一版这里写的是"这一屏按 $96 算的，价格换了挑法也会变" ——
+     *    **拿一句注释把问题绕过去**。价格恰恰是决定"多一分评分值多少钱"的量，
+     *    $96 和 $350 上一分总品质差着三倍多，挑法整个不一样。
+     *    现在是把价格和品质一起解的，所以这里改成报清楚"到底算了多少"。
+     */
+    box.appendChild(el('div', 'sub', plan.priceFixed
+      ? ('价格是你填死的（$' + price + '），所以只在这一个价上挑品质。\n' +
+         '把那一格清空，价格会和品质【一起】解 —— 挑法多半会变。')
+      : ('价格没填，所以价格和品质是【一起解】的：' +
+         RW('MAP_REST_PRICE_MIN') + '~' + RW('MAP_REST_PRICE_MAX') +
+         ' 共 ' + plan.swept + ' 个价位 × ' + plan.states.length +
+         ' 种品质组合，全扫过了。\n' +
+         '（' + plan.pruned + ' 种组合里，品质更低、料钱还更贵的' +
+         (plan.pruned - plan.states.length) + ' 种被剪掉了 —— ' +
+         '那些永远不可能是答案，剪掉不损失任何最优解。）')));
   }
 
   /**
@@ -2629,11 +2773,11 @@
     free.appendChild(el('span', null, '空着的就拿来扫：'));
     free.appendChild(el('span', null, '价格 '));
     free.appendChild(restNum(REST.price, '不填=扫全程', function (v) {
-      REST.price = v; restRender();
+      REST.price = v; REST.qGo = false; restRender();
     }));
     free.appendChild(el('span', null, '　评分 '));
     free.appendChild(restNum(REST.rating, '不填=按菜单算', function (v) {
-      REST.rating = v; restRender();
+      REST.rating = v; REST.qGo = false; restRender();
     }));
     /*
      * 上座率：按 % 填，小数点随便（62.5 就是 62.5%）。
@@ -2645,13 +2789,13 @@
      */
     free.appendChild(el('span', null, '　上座率 % '));
     free.appendChild(restNum(REST.occ, '如 62.5，不填=按评分算', function (v) {
-      REST.occ = v; restRender();
+      REST.occ = v; REST.qGo = false; restRender();
     }));
     var sb = el('button', null, REST.staff == null
       ? '服务：两档都扫' : (REST.staff ? '服务：优质' : '服务：普通'));
     sb.onclick = function () {
       REST.staff = (REST.staff == null) ? true : (REST.staff ? false : null);
-      restRender();
+      REST.qGo = false; restRender();
     };
     free.appendChild(sb);
     box.appendChild(free);
