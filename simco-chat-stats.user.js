@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Sim Companies 聊天存档 · 词频统计
 // @namespace    https://github.com/Hoshino-Saisho/simco-public
-// @version      1.7.1
-// @description  在聊天存档页面上统计多个关键词的出现分布：按小时、按天、按发送者、按房间；支持排除词、强词/弱词三档、自定时区、产品图标码转名字，可导出明细表格
+// @version      1.9.0
+// @description  聊天存档增强：① 词频统计（按小时/天/发送者/房间，支持排除词、强弱词三档、自定时区、图标码转名字、导出 CSV）② 销售办公室合同对比 —— 把多张单子并排摆开，比时利和利润率 ③ 餐馆优化器 —— 扫价格/服务/评分，画曲线和热力图，直接指出利润最高那一档
 // @author       —
 // @match        https://simco-chat.cc.cd/*
 // @match        https://simco-chat.garden-of-eden.workers.dev/*
@@ -103,7 +103,12 @@
 
   /* 房间的中文名。左边的 key 是数据里的房间标识（日文件路径就是 d/<key>/…），
      这张表只管显示。没配的显示 key 本身，将来加新房间也不会开天窗。 */
-  var ROOM_LABEL = { SALES: '交易', SOCIAL: '社交', X: '航天交易', ENSALES: '英文交易' };
+  /*
+   * ⚠️ 左边的 key 是数据的一部分（日文件路径 d/<key>/日期.json），改不得；
+   * 这张表只管【显示】。房间叫 ZH、页面上写「游戏」，是两件事。
+   */
+  var ROOM_LABEL = { ZH: '游戏', SALES: '交易', SOCIAL: '社交',
+                     X: '航天交易', ENSALES: '英文交易' };
   var MULTI = '\u0000multi';      // 「同时命中 ≥2 个词」这一类的内部键
   var PALETTE = ['#7dd3fc', '#86efac', '#fbbf24', '#f472b6', '#c4b5fd',
                  '#fb923c', '#34d399', '#a5b4fc', '#fda4af', '#fcd34d',
@@ -908,7 +913,1113 @@
     '.scs-filter{display:flex;align-items:center;gap:6px;margin-top:12px;padding:8px 12px;',
     'background:rgba(125,211,252,.1);border:1px solid rgba(125,211,252,.3);border-radius:10px}',
     '.scs-dim{color:#666e7e;font-size:11.5px}',
+
+    /* ---------------- 合同对比 ---------------- */
+    /* 第二个悬浮键，叠在词频那个上面。只在计算器模式下显示。 */
+    '#scs-rest{position:fixed;right:18px;bottom:122px;z-index:99998;width:44px;height:44px;',
+    '  border-radius:50%;border:1px solid var(--line,#243244);cursor:pointer;',
+    '  background:var(--panel,#111823);color:var(--tx,#e8eef7);font-size:18px;',
+    '  box-shadow:0 6px 20px rgba(0,0,0,.4);display:none}',
+    '#scs-restwin{position:fixed;right:18px;bottom:172px;z-index:99997;',
+    '  width:min(660px,calc(100vw - 36px));max-height:min(76vh,760px);overflow:auto;',
+    '  background:var(--panel,#111823);color:var(--tx,#e8eef7);border-radius:12px;',
+    '  border:1px solid var(--line,#243244);box-shadow:0 18px 50px rgba(0,0,0,.55);',
+    '  padding:14px 16px;font-size:13px;display:none}',
+    '#scs-restwin h3{margin:0 0 4px;font-size:15px}',
+    '#scs-restwin .sub{color:var(--mut,#93a4bd);font-size:11.5px;line-height:1.6;',
+    '  white-space:pre-wrap;margin-bottom:8px}',
+    '#scs-restwin .got{display:flex;flex-wrap:wrap;gap:6px 14px;margin:8px 0;',
+    '  padding:8px 10px;border:1px solid var(--line,#243244);border-radius:9px}',
+    '#scs-restwin .got span b{color:var(--acc,#7dd3fc);font-weight:700}',
+    '#scs-restwin .free{display:flex;flex-wrap:wrap;gap:8px;align-items:center;',
+    '  margin:8px 0;padding:8px 10px;border:1px solid var(--acc,#7dd3fc);border-radius:9px}',
+    '#scs-restwin input[type=number]{width:82px;padding:4px 6px;border-radius:6px;',
+    '  border:1px solid var(--line,#243244);background:var(--panel2,#0d141d);',
+    '  color:var(--tx,#e8eef7);font-family:inherit}',
+    '#scs-restwin canvas{display:block;width:100%;margin:8px 0;border-radius:9px;',
+    '  border:1px solid var(--line,#243244);background:var(--panel2,#0d141d);',
+    '  touch-action:none;cursor:grab}',
+    '#scs-restwin .best{padding:8px 11px;border-radius:9px;margin:8px 0;',
+    '  border:1px solid var(--ok,#86efac);background:rgba(134,239,172,.08)}',
+    '#scs-restwin .best b{color:var(--ok,#86efac)}',
+    '#scs-restwin .warn{color:var(--warn,#facc15);font-size:11.5px;line-height:1.6;',
+    '  white-space:pre-wrap}',
+    '#scs-restwin .tabs{display:flex;gap:6px;margin:6px 0}',
+    '#scs-restwin .tabs button{padding:4px 10px;border-radius:7px;cursor:pointer;',
+    '  border:1px solid var(--line,#243244);background:var(--panel2,#0d141d);',
+    '  color:var(--mut,#93a4bd);font-family:inherit;font-size:12px}',
+    '#scs-restwin .tabs button.on{border-color:var(--acc,#7dd3fc);color:var(--acc,#7dd3fc)}',
+    '#scs-cmp{position:fixed;right:18px;bottom:70px;z-index:99998;width:44px;height:44px;',
+    'border-radius:12px;background:#1b1f2a;color:#fbbf24;border:1px solid rgba(251,191,36,.4);',
+    'cursor:pointer;font-size:17px;line-height:44px;text-align:center;font-family:inherit;',
+    'box-shadow:0 6px 20px rgba(0,0,0,.45)}',
+    '#scs-cmp:hover{border-color:#fbbf24}',
+    /* 开了几个窗就在角上标几 —— 窗口拖到屏幕外面时这是唯一的线索 */
+    '#scs-cmp[data-n]:not([data-n=""])::after{content:attr(data-n);position:absolute;',
+    'top:-6px;right:-6px;min-width:17px;height:17px;line-height:17px;font-size:10.5px;',
+    'border-radius:9px;background:#fbbf24;color:#12151d;font-weight:700}',
+    '#scs-wins{position:fixed;inset:0;z-index:99990;pointer-events:none}',
+    '.scs-win,#scs-cmpbar{position:absolute;pointer-events:auto;width:356px;',
+    'background:#12151d;border:1px solid rgba(251,191,36,.35);border-radius:11px;',
+    'box-shadow:0 16px 42px rgba(0,0,0,.6);',
+    'font:12px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;',
+    'color:#e6e9ef}',
+    '#scs-cmpbar{display:none;position:fixed;z-index:99991;width:290px;',
+    'border-color:rgba(125,211,252,.45)}',
+    '#scs-cmpbar.on{display:block}',
+    '.scs-wh{display:flex;align-items:center;gap:6px;padding:5px 6px 5px 9px;',
+    'border-bottom:1px solid rgba(255,255,255,.08);cursor:move;user-select:none;',
+    'background:rgba(251,191,36,.10);border-radius:11px 11px 0 0;touch-action:none}',
+    '#scs-cmpbar .scs-wh{background:rgba(125,211,252,.12)}',
+    /* 名字可以改：「航天那张 / 便宜那张」比「单子 1 / 单子 2」好认得多 */
+    'input.scs-wname{flex:1;min-width:0;background:transparent;border:0;padding:2px 3px;',
+    'color:#fbbf24;font-size:12px;font-weight:700;font-family:inherit;border-radius:5px}',
+    'input.scs-wname:hover{background:rgba(255,255,255,.06)}',
+    'input.scs-wname:focus{outline:none;background:rgba(255,255,255,.09)}',
+    'span.scs-wname{flex:1;font-size:12px;font-weight:700;color:#7dd3fc}',
+    '.scs-wx{width:22px;height:22px;line-height:1;padding:0;border-radius:6px;',
+    'background:transparent;color:#666e7e;border:1px solid rgba(255,255,255,.12);',
+    'cursor:pointer;font-size:13px;font-family:inherit;flex:0 0 auto}',
+    '.scs-wx:hover:not(:disabled){border-color:#f87171;color:#f87171}',
+    '.scs-wx:disabled{opacity:.3;cursor:default}',
+    '.scs-wb{padding:8px 9px 10px}',
+    '.scs-wg{display:grid;gap:6px;grid-template-columns:repeat(2,minmax(0,1fr))}',
+    '.scs-cf label{display:block;color:#8b93a3;font-size:10px;margin:0 0 2px}',
+    '.scs-win input,#scs-cmpbar input{width:100%;padding:4px 6px;background:#1b1f2a;',
+    'color:#e6e9ef;border:1px solid rgba(255,255,255,.1);border-radius:6px;',
+    'font-size:12px;font-family:inherit;font-variant-numeric:tabular-nums}',
+    '.scs-win input:focus{outline:none;border-color:#fbbf24}',
+    '.scs-wtw{overflow-x:auto;margin-top:8px}',
+    '.scs-win table,#scs-cmpbar table{border-collapse:collapse;width:100%;font-size:11.5px}',
+    '.scs-win th,#scs-cmpbar th{font-size:9.5px;color:#666e7e;font-weight:600;',
+    'text-align:left;padding:0 3px 4px;white-space:nowrap;border:0;background:none;position:static}',
+    '.scs-win td,#scs-cmpbar td{padding:2px 3px;border:0;color:#8b93a3;white-space:nowrap}',
+    '.scs-win td input{width:58px}',
+    '#scs-cmpbar td{color:#e6e9ef;padding:3px 4px}',
+    '#scs-cmpbar td.scs-n{text-align:right;font-variant-numeric:tabular-nums}',
+    '#scs-cmpbar td.scs-n.win{color:#86efac;font-weight:700}',
+    '.scs-wadd{margin-top:7px;padding:3px 9px;font-size:11.5px}',
+    '.scs-wk{display:grid;gap:6px;margin-top:9px;grid-template-columns:repeat(2,minmax(0,1fr))}',
+    '.scs-wkpi{background:#1b1f2a;border:1px solid rgba(255,255,255,.08);border-radius:8px;',
+    'padding:6px 8px;min-width:0}',
+    '.scs-wkpi.big{grid-column:1 / -1}',
+    '.scs-wkk{font-size:10px;color:#666e7e}',
+    '.scs-wkv{font-size:13px;margin-top:1px;font-variant-numeric:tabular-nums;',
+    'word-break:break-all}',
+    '.scs-wkpi.big .scs-wkv{font-size:19px;font-weight:700}',
+    '.scs-wkpi.good .scs-wkv{color:#86efac}',
+    '.scs-wkpi.bad .scs-wkv{color:#f87171}',
+    /* 两个第一名各标一个边 —— 不合成一个总分，见 cmpRenderBar 的注释 */
+    '.scs-wkpi.win{border-color:rgba(134,239,172,.55);background:rgba(134,239,172,.08)}',
+    '.scs-wnote{color:#666e7e;font-size:10.5px;margin-top:8px;line-height:1.5}',
+    '@media (max-width:700px){',
+    /* 手机上两个悬浮键都往上抬，避开底部安全区和浏览器自己的工具条 */
+    '  #scs-cmp{right:12px;bottom:calc(70px + env(safe-area-inset-bottom));',
+    '           width:48px;height:48px;line-height:48px}',
+    /* 小窗铺到接近整宽：356 在窄屏上会有一半露在外面，拖都拖不回来 */
+    '  .scs-win{width:calc(100vw - 24px)}',
+    '  #scs-cmpbar{width:calc(100vw - 24px)}',
+    '  .scs-win input,#scs-cmpbar input{font-size:16px}',
+    '  .scs-win td input{width:64px}',
+    '}',
   ].join('');
+
+
+  /*
+   * ==========================================================================
+   *                      合同对比（销售办公室）
+   * ==========================================================================
+   *
+   * 存档站上的计算器只算【一张单子】。这一块是把几张单子同时摆出来比 ——
+   * 每张一个可拖动的小窗，另有一个「对比」窗把它们按时利和利润率排好。
+   *
+   * 为什么放在插件里而不是页面里：**这是进阶功能，不该是打开网页就有的。**
+   * 页面那边负责"这张单子能不能做"，插件负责"这几张里挑哪张"。
+   *
+   * ---- 数据从哪来 ----
+   *
+   * 读 localStorage 的 `simco.calc` —— 那是页面计算器自己存的那份，
+   * 同源，插件直接就能读。字段是页面那边定的契约（两边都写了注释）：
+   *
+   *     { hours, wage, bonus, target, items: [{ q, p, quality, cost }] }
+   *     值全是【字符串】（输入框原文，'1.' 这种中间状态也原样存着）
+   *
+   * 分裂出来之后这份数据就【复制成插件自己的】了，存在 `scs.cmp`，
+   * 页面再怎么改都不会动到它 —— 那正是对比要的：定住几个快照。
+   *
+   * ---- 公式和页面必须一致 ----
+   *
+   * 这里重写了一遍 calcContract。重复是有代价的（两边会飘），
+   * 但插件够不着页面的函数（页面整段包在 IIFE 里，一个全局都没露）。
+   * 所以两边的测试**用同一组数字**钉着：
+   *     1 个、单价 84470、奖励 1.85%、q4、成本 77000、工资 31620、47 小时
+   *     → 时利 −380.8345，收入 90720.78
+   * 哪边改坏了，那边的测试就红。
+   */
+
+  var CMP_KEY = 'scs.cmp';
+
+  /** 输入框原文 → 数字。取不出来当 0，别让一个半截数字把整块算炸。 */
+  function cnum(v) { var n = Number(v); return isFinite(n) ? n : 0; }
+
+  /**
+   * 中文输入法友好的数字清洗。和页面那边同一套规则。
+   * （页面上不做这个的话，中文键盘打小数点会被直接过滤，看着像键盘坏了。）
+   */
+  function normNum(s) {
+    s = String(s == null ? '' : s);
+    s = s.replace(/[。．｡､、,，]/g, '.');
+    s = s.replace(/[０-９]/g, function (c) {
+      return String.fromCharCode(c.charCodeAt(0) - 0xFEE0);
+    });
+    s = s.replace(/[－ー—–]/g, '-');
+    s = s.replace(/[^0-9.\-]/g, '');
+    var neg = s.charAt(0) === '-';
+    s = s.replace(/-/g, '');
+    var parts = s.split('.');
+    if (parts.length > 2) s = parts.shift() + '.' + parts.join('');
+    return (neg ? '-' : '') + s;
+  }
+
+  /**
+   * 一张单子的账。
+   *
+   *   收入 R = Σ 单价×数量×(1 + 奖励% × 品质)
+   *   货款 G = Σ 进价×数量
+   *   利润   = R − G − 工资
+   *   时利   = 利润 ÷ 小时数
+   *   利润率 = 利润 ÷ 收入        ← 对比用的第二个指标
+   *
+   * ⚠️ 利润率的分母是【收入】，不是成本。
+   * 用成本当分母算出来的是"加价率"，两张单子成本结构不同时没法比；
+   * 而收入是合同白纸黑字给的那个数，除出来就是"这单子里有多少是你的"。
+   */
+  function cmpCalc(c) {
+    var b = cnum(c.bonus) / 100;
+    var H = cnum(c.hours) || 1;
+    var W = cnum(c.wage);
+    var rev = 0, goods = 0;
+    (c.items || []).forEach(function (it) {
+      var q = cnum(it.q), p = cnum(it.p), Q = cnum(it.quality), cost = cnum(it.cost);
+      rev += p * q * (1 + b * Q);
+      goods += cost * q;
+    });
+    var profit = rev - goods - W;
+    return {
+      rev: rev, goods: goods, wage: W, hours: H, profit: profit,
+      hourly: profit / H,
+      // 收入是 0 的时候（还没填单价）利润率没有意义 —— 给 null，界面上显示 —
+      margin: rev > 0 ? profit / rev : null,
+      budget: rev - W - cnum(c.target) * H,
+    };
+  }
+
+  /* ---------------------------- 状态 ---------------------------- */
+
+  var CMP = (function () {
+    try {
+      var raw = JSON.parse(localStorage.getItem(CMP_KEY) || 'null');
+      if (raw && raw.wins) return raw;
+    } catch (e) { /* 坏了就从空的开始 */ }
+    return { wins: [], seq: 1 };
+  })();
+
+  function cmpSave() {
+    try { localStorage.setItem(CMP_KEY, JSON.stringify(CMP)); }
+    catch (e) { /* 存不了不影响用 */ }
+  }
+
+  /** 页面计算器现在填的那张单子。读不到就给一张空的。 */
+  function cmpReadPage() {
+    var blank = { hours: '47', wage: '', bonus: '', target: '500',
+                  items: [{ q: '', p: '', quality: '', cost: '' }] };
+    try {
+      var raw = JSON.parse(localStorage.getItem('simco.calc') || 'null');
+      if (!raw || !raw.items || !raw.items.length) return blank;
+      return {
+        hours: raw.hours, wage: raw.wage, bonus: raw.bonus, target: raw.target,
+        items: raw.items.map(function (it) {
+          return { q: it.q, p: it.p, quality: it.quality, cost: it.cost };
+        }),
+      };
+    } catch (e) { return blank; }
+  }
+
+  function cmpMoney(x) {
+    if (!isFinite(x)) return '—';
+    return Math.round(x).toLocaleString();
+  }
+  function cmpMoney2(x) {
+    if (!isFinite(x)) return '—';
+    return x.toLocaleString(undefined,
+      { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  function cmpPct(x) {
+    return (x == null || !isFinite(x)) ? '—' : (x * 100).toFixed(2) + '%';
+  }
+
+  /**
+   * 分裂：把页面上现在填的那张单子复制成一个小窗。
+   *
+   * 复制的是【快照】—— 之后你在页面上接着改，这个窗口不跟着变。
+   * 不这样的话就没有"对比"可言了：几个窗口会一起跟着页面走。
+   */
+  function cmpSplit() {
+    var w = cmpReadPage();
+    w.id = 'c' + (CMP.seq++);
+    w.name = '单子 ' + (CMP.wins.length + 1);
+    var n = CMP.wins.length;
+    // 从右上往左下错开。摆左上会正好压住页面上你刚才填数的那几个格子。
+    var W = (window.innerWidth || 1200);
+    w.x = Math.max(8, W - 372 - (n % 5) * 26);
+    w.y = 68 + (n % 5) * 26;
+    CMP.wins.push(w);
+    cmpSave();
+    cmpRender();
+  }
+
+  /** 标题栏拖动。指针捕获，拖出窗口外也不会掉。 */
+  function cmpDrag(handle, box, w) {
+    handle.onpointerdown = function (e) {
+      if (e.target && e.target.tagName === 'BUTTON') return;   // 别把关闭键当把手
+      var sx = e.clientX, sy = e.clientY, ox = cnum(w.x), oy = cnum(w.y);
+      var move = function (ev) {
+        w.x = ox + (ev.clientX - sx);
+        w.y = oy + (ev.clientY - sy);
+        box.style.left = w.x + 'px';
+        box.style.top = w.y + 'px';
+      };
+      var up = function () {
+        handle.removeEventListener('pointermove', move);
+        handle.removeEventListener('pointerup', up);
+        try { handle.releasePointerCapture(e.pointerId); } catch (x) {}
+        cmpSave();          // 松手才存，别把每一帧都写进 localStorage
+      };
+      try { handle.setPointerCapture(e.pointerId); } catch (x) {}
+      handle.addEventListener('pointermove', move);
+      handle.addEventListener('pointerup', up);
+      if (e.preventDefault) e.preventDefault();
+    };
+  }
+
+  /**
+   * 一个输入框。改了就重画。
+   *
+   * ⚠️ type=text，不是 number。number 会把打到一半的 '1.' 当成 1，
+   * 重画时写回去那个点就没了 —— 小数永远输不完整。页面那边栽过一次。
+   */
+  function cmpInput(val, onset, key) {
+    var i = document.createElement('input');
+    i.type = 'text';
+    i.setAttribute('inputmode', 'decimal');
+    i.setAttribute('autocomplete', 'off');
+    i.setAttribute('data-ck', key);
+    i.value = (val == null) ? '' : String(val);
+    i.oninput = function () {
+      var raw = i.value, fixed = normNum(raw), caret = null;
+      try { caret = i.selectionStart; } catch (e) { caret = null; }
+      if (fixed !== raw && caret != null) caret -= (raw.length - fixed.length);
+      onset(fixed);
+      cmpSave();
+      cmpRender();
+      var back = document.querySelector('[data-ck="' + key + '"]');
+      if (!back || !back.focus) return;
+      back.focus();
+      try {
+        var at = caret == null ? back.value.length : Math.max(0, caret);
+        back.setSelectionRange(at, at);
+      } catch (e) { /* 个别浏览器不支持 */ }
+    };
+    return i;
+  }
+
+  function cmpField(lab, val, onset, key) {
+    var d = el('div', 'scs-cf');
+    d.appendChild(el('label', null, lab));
+    d.appendChild(cmpInput(val, onset, key));
+    return d;
+  }
+
+  /* ---------------------------- 画 ---------------------------- */
+
+  function cmpRenderWin(host, w, wi, rank) {
+    var R = cmpCalc(w);
+    var box = el('div', 'scs-win');
+    box.style.left = cnum(w.x) + 'px';
+    box.style.top = cnum(w.y) + 'px';
+
+    var head = el('div', 'scs-wh');
+    // 名字可以改 —— 「单子 1 / 单子 2」比不过「航天那张 / 便宜那张」
+    var nm = document.createElement('input');
+    nm.className = 'scs-wname';
+    nm.type = 'text';
+    nm.value = w.name || ('单子 ' + (wi + 1));
+    nm.setAttribute('data-ck', w.id + 'n');
+    nm.oninput = function () { w.name = nm.value; cmpSave(); cmpRenderBar(); };
+    head.appendChild(nm);
+    var x = el('button', 'scs-wx', '×');
+    x.title = '关掉这个窗口';
+    x.onclick = function () {
+      CMP.wins.splice(wi, 1); cmpSave(); cmpRender();
+    };
+    head.appendChild(x);
+    cmpDrag(head, box, w);
+    box.appendChild(head);
+
+    var body = el('div', 'scs-wb');
+    var g = el('div', 'scs-wg');
+    g.appendChild(cmpField('小时', w.hours, function (v) { w.hours = v; }, w.id + 'h'));
+    g.appendChild(cmpField('工资', w.wage, function (v) { w.wage = v; }, w.id + 'w'));
+    g.appendChild(cmpField('奖励%', w.bonus, function (v) { w.bonus = v; }, w.id + 'b'));
+    g.appendChild(cmpField('目标时利', w.target, function (v) { w.target = v; }, w.id + 't'));
+    body.appendChild(g);
+
+    var tw = el('div', 'scs-wtw');
+    var t = document.createElement('table');
+    var hr = document.createElement('tr');
+    ['', '数量', '单价', '品质', '进价', ''].forEach(function (h) {
+      hr.appendChild(el('th', null, h));
+    });
+    t.appendChild(hr);
+    w.items.forEach(function (it, i) {
+      var tr = document.createElement('tr');
+      var c0 = el('td', null, '产品 ' + (i + 1));
+      tr.appendChild(c0);
+      [['q', 'q'], ['p', 'p'], ['quality', 'Q'], ['cost', 'c']].forEach(function (f) {
+        var td = el('td');
+        td.appendChild(cmpInput(it[f[0]], function (v) { it[f[0]] = v; },
+                                w.id + 'i' + i + f[1]));
+        tr.appendChild(td);
+      });
+      var td2 = el('td');
+      var del = el('button', 'scs-wx', '×');
+      del.title = '删掉这一行';
+      if (w.items.length <= 1) del.disabled = true;
+      else del.onclick = function () { w.items.splice(i, 1); cmpSave(); cmpRender(); };
+      td2.appendChild(del);
+      tr.appendChild(td2);
+      t.appendChild(tr);
+    });
+    tw.appendChild(t);
+    body.appendChild(tw);
+
+    var add = el('button', 'scs-btn scs-wadd', '+ 产品');
+    add.onclick = function () {
+      w.items.push({ q: '', p: '', quality: '', cost: '' }); cmpSave(); cmpRender();
+    };
+    body.appendChild(add);
+
+    var k = el('div', 'scs-wk');
+    var mk = function (lab, val, cls) {
+      var d = el('div', 'scs-wkpi' + (cls ? ' ' + cls : ''));
+      d.appendChild(el('div', 'scs-wkk', lab));
+      d.appendChild(el('div', 'scs-wkv', val));
+      return d;
+    };
+    k.appendChild(mk('时利', cmpMoney2(R.hourly),
+      'big ' + (R.hourly >= cnum(w.target) ? 'good' : 'bad') +
+      (rank.bestHourly === w.id ? ' win' : '')));
+    k.appendChild(mk('利润率', cmpPct(R.margin),
+      (R.margin != null && R.margin >= 0 ? 'good' : 'bad') +
+      (rank.bestMargin === w.id ? ' win' : '')));
+    k.appendChild(mk('货款预算', cmpMoney(R.budget)));
+    body.appendChild(k);
+
+    box.appendChild(body);
+    host.appendChild(box);
+  }
+
+  /**
+   * 「对比」条：把所有窗口按时利排好，两个指标各标一个第一。
+   *
+   * ⚠️ 时利最高的和利润率最高的**经常不是同一张单子** ——
+   * 一张 47 小时赚 3 万的和一张 5 小时赚 5 千的，时利差不多，
+   * 但后者占用少、利润率可能高得多。所以两个都标，不合成一个分数：
+   * 合成分数要设权重，而权重取决于你当下缺时间还是缺钱，那是你的判断。
+   */
+  function cmpRank() {
+    var best = { bestHourly: null, bestMargin: null };
+    var bh = -Infinity, bm = -Infinity;
+    CMP.wins.forEach(function (w) {
+      var R = cmpCalc(w);
+      if (isFinite(R.hourly) && R.hourly > bh) { bh = R.hourly; best.bestHourly = w.id; }
+      if (R.margin != null && R.margin > bm) { bm = R.margin; best.bestMargin = w.id; }
+    });
+    return best;
+  }
+
+  function cmpRenderBar() {
+    var bar = document.getElementById('scs-cmpbar');
+    if (!bar) return;
+    clear(bar);
+    if (CMP.wins.length < 2) { bar.className = ''; return; }
+    bar.className = 'on';
+
+    var rank = cmpRank();
+    var head = el('div', 'scs-wh');
+    head.appendChild(el('span', 'scs-wname', '对比（' + CMP.wins.length + ' 张）'));
+    var x = el('button', 'scs-wx', '×');
+    x.title = '关掉全部对比窗';
+    x.onclick = function () { CMP.wins = []; cmpSave(); cmpRender(); };
+    head.appendChild(x);
+    /*
+     * 默认摆左下角。
+     * 摆左上会正好盖住页面上那几个输入框 —— 你一分裂完，
+     * 第一件事就得先把它拖开，那这个默认位置等于没选。
+     */
+    if (!CMP.bar) {
+      var vh = (window.innerHeight || 800);
+      // 窄屏上再往上抬一截：右下角那两个悬浮键会压在对比表的数字上
+      CMP.bar = { x: 12, y: Math.max(60, vh - 250 - (isNarrow() ? 74 : 0)) };
+    }
+    bar.style.left = cnum(CMP.bar.x) + 'px';
+    bar.style.top = cnum(CMP.bar.y) + 'px';
+    cmpDrag(head, bar, CMP.bar);
+    bar.appendChild(head);
+
+    var body = el('div', 'scs-wb');
+    var t = document.createElement('table');
+    var hr = document.createElement('tr');
+    ['单子', '时利', '利润率'].forEach(function (h) { hr.appendChild(el('th', null, h)); });
+    t.appendChild(hr);
+
+    // 按时利从高到低排 —— 那是最常问的那个问题
+    CMP.wins.slice().map(function (w, i) {
+      return { w: w, i: i, R: cmpCalc(w) };
+    }).sort(function (a, b) {
+      return (isFinite(b.R.hourly) ? b.R.hourly : -Infinity) -
+             (isFinite(a.R.hourly) ? a.R.hourly : -Infinity);
+    }).forEach(function (o) {
+      var tr = document.createElement('tr');
+      tr.appendChild(el('td', null, o.w.name || ('单子 ' + (o.i + 1))));
+      tr.appendChild(el('td', 'scs-n' + (rank.bestHourly === o.w.id ? ' win' : ''),
+                        cmpMoney2(o.R.hourly)));
+      tr.appendChild(el('td', 'scs-n' + (rank.bestMargin === o.w.id ? ' win' : ''),
+                        cmpPct(o.R.margin)));
+      t.appendChild(tr);
+    });
+    body.appendChild(t);
+    body.appendChild(el('div', 'scs-wnote',
+      '时利最高的和利润率最高的经常不是同一张 —— 缺时间就看左边，缺本金就看右边。'));
+    bar.appendChild(body);
+  }
+
+  function cmpRender() {
+    var host = document.getElementById('scs-wins');
+    if (!host) return;
+    clear(host);
+    var rank = cmpRank();
+    CMP.wins.forEach(function (w, i) { cmpRenderWin(host, w, i, rank); });
+    cmpRenderBar();
+    var fab = document.getElementById('scs-cmp');
+    if (fab) fab.setAttribute('data-n', CMP.wins.length || '');
+  }
+
+  /**
+   * 那个分裂按钮只在【页面切到计算器模式】时出现。
+   *
+   * 聊天记录模式下它没有任何意义（没有单子可分裂），常驻只会挡着看消息。
+   * 页面切模式是给 body 加 / 去一个 class，所以盯 body 的 class 就够了 ——
+   * 不用去猜页面内部的状态，也不依赖页面暴露任何东西。
+   */
+  function cmpWatchMode() {
+    var sync = function () {
+      var on = false;
+      try { on = document.body.classList.contains('mode-calc'); } catch (e) {}
+      var fab = document.getElementById('scs-cmp');
+      var host = document.getElementById('scs-wins');
+      if (fab) fab.style.display = on ? '' : 'none';
+      if (host) host.style.display = on ? '' : 'none';
+      var bar = document.getElementById('scs-cmpbar');
+      if (bar) bar.style.display = on ? '' : 'none';
+    };
+    sync();
+    try {
+      new MutationObserver(sync).observe(document.body,
+        { attributes: true, attributeFilter: ['class'] });
+    } catch (e) { /* 没有 MutationObserver 就只在启动时判一次 */ }
+  }
+
+
+  /* ======================= 餐馆优化器 =======================
+   *
+   * ⚠️⚠️ 这一块**一个公式都不自己写**。
+   *
+   *   评分、上座率、食材、工资全部直接调页面上的
+   *   mapRestRating / mapRestOcc / mapRestNeed / mapRestWage。
+   *   插件是 `@grant none` 跑的，和页面同一个 window，够得着。
+   *
+   *   抄一份进来的话，页面那边一改公式（这一节已经改过两次了：
+   *   品质那一项、销售加成那一项），插件就开始给出**看着很像对的错答案** ——
+   *   而两边各自看都对。这是这个仓库最贵的一类 bug。
+   *
+   *   代价是：页面版本太老（没有那几个函数）时，这个功能**直接不开**，
+   *   并且说清楚为什么。宁可不给，也不给一份自己算的。
+   */
+  var REST_FN = ['mapRestRating', 'mapRestOcc', 'mapRestNeed', 'mapRestWage',
+                 'mapRestSeats', 'mapRestMenuOk', 'mapRestOtherSeats',
+                 'MAP_REST_PRICE_MIN', 'MAP_REST_PRICE_MAX', 'MAP_REST_RATING_MAX'];
+  function restReady() {
+    for (var i = 0; i < REST_FN.length; i++) {
+      if (typeof window[REST_FN[i]] === 'undefined') return REST_FN[i];
+    }
+    return null;
+  }
+
+  var REST = { price: '', rating: '', staff: null, view: 'heat',
+               yaw: -0.6, pitch: 0.9, grid: null };
+
+  /** 从页面上把这一栋餐馆的现状抓出来。抓不到的留空。 */
+  function restRead() {
+    var miss = restReady();
+    if (miss) return { err: '页面上找不到 ' + miss + ' —— 存档站的版本太老了。\n' +
+                            '这个功能靠直接调页面自己的餐馆算法，不自己抄一份，' +
+                            '所以缺了就不开。刷新一下、或者等站点更新。' };
+    var MAP = window.MAP;
+    if (!MAP) return { err: '页面上没有 MAP —— 先进「游戏模拟」那个模式。' };
+    var x = null;
+    try {
+      window.mapListAt(window.mapCur()).forEach(function (b) {
+        if (b.k === MAP.sel) x = b;
+      });
+    } catch (e) {}
+    if (!x || x.b !== '餐馆') return { err: '先在「游戏模拟」里点开一栋餐馆。' };
+
+    var live = window.mapRestAt ? window.mapRestAt(x.k, window.mapCur()) : null;
+    var eff = (live && window.mapRestCfgAt)
+      ? window.mapRestCfgAt(live, window.mapCur()) : null;
+    var dr = (MAP.rdraft || {})[x.k] || {};
+    var menu = (eff && eff.menu) || dr.menu || [];
+    var style = live ? live.style
+      : (window.mapRestStyle ? window.mapRestStyle(x.k, window.mapCur()) : 'eco');
+    var lv = window.mapLvNow(x);
+    var staff = (REST.staff == null)
+      ? !!((eff && eff.staff) || dr.staff) : REST.staff;
+
+    // 食材成本：按仓库里的均价算这一轮要花多少
+    var cost = 0, missMat = [];
+    try {
+      window.mapRestNeed(menu, lv, style).forEach(function (u) {
+        var g = window.mapStock(u.id);
+        if (!g) { missMat.push(u.id); return; }
+        cost += g.c * u.n;
+      });
+    } catch (e) {}
+
+    var qsum = 0;
+    try {
+      menu.forEach(function (id) { qsum += window.mapStockQ(id); });
+    } catch (e) {}
+
+    return {
+      x: x, lv: lv, style: style, menu: menu, staff: staff,
+      seats: window.mapRestSeats(lv, style),
+      cost: cost, missMat: missMat, qsum: qsum,
+      wage: window.mapRestWage(lv, style, staff),
+      wageAlt: window.mapRestWage(lv, style, !staff),
+      other: window.mapRestOtherSeats(x.k, window.mapCur()),
+      ok: window.mapRestMenuOk(menu),
+      livePrice: eff ? eff.price : (dr.price || null),
+      running: !!live,
+    };
+  }
+
+  /** 一个价格 / 一个服务档下的整轮账。全部走页面自己的函数。 */
+  function restOne(d, price, staff) {
+    var cfg = { menu: d.menu, price: price, staff: staff, style: d.style };
+    var rt = window.mapRestRating(cfg);
+    var oc = window.mapRestOcc(rt.r, price, d.other);
+    var seats = d.seats;
+    var served = Math.min(seats, Math.floor(seats * oc.occ));
+    var wage = window.mapRestWage(d.lv, d.style, staff);
+    return { price: price, staff: staff, rating: rt.r, occ: oc.occ,
+             served: served, spoiled: seats - served,
+             revenue: served * price,
+             profit: served * price - d.cost - wage, wage: wage };
+  }
+
+  /** 价格从头扫到尾。步长取整块的 1 元，350−60 就 291 个点，够密也够快。 */
+  function restSweep(d, staff) {
+    var lo = window.MAP_REST_PRICE_MIN, hi = window.MAP_REST_PRICE_MAX;
+    var out = [];
+    for (var p = lo; p <= hi; p++) out.push(restOne(d, p, staff));
+    return out;
+  }
+  /** 找利润最高的那一个。 */
+  function restBest(rows) {
+    var b = null;
+    rows.forEach(function (r) { if (!b || r.profit > b.profit) b = r; });
+    return b;
+  }
+  /**
+   * 评分 → 上座率那条曲线。
+   * 评分本身不扫价格 —— 它是"假设评分是 N，上座率会是多少"。
+   */
+  function restRatingCurve(d, price) {
+    var out = [], max = window.MAP_REST_RATING_MAX;
+    for (var i = 0; i <= 100; i++) {
+      var r = max * i / 100;
+      var oc = window.mapRestOcc(r, price, d.other);
+      var served = Math.min(d.seats, Math.floor(d.seats * oc.occ));
+      out.push({ rating: r, occ: oc.occ, served: served,
+                 profit: served * price - d.cost - d.wage });
+    }
+    return out;
+  }
+  /** 价格 × 评分 的网格（两个都没填时用）。 */
+  function restGrid(d, nP, nR) {
+    var lo = window.MAP_REST_PRICE_MIN, hi = window.MAP_REST_PRICE_MAX;
+    var max = window.MAP_REST_RATING_MAX;
+    /*
+     * px / py 存的是【真的被扫到的那些坐标】。
+     * 只存 lo / hi 的话，格子切错一格（j/nP 而不是 j/(nP−1)）
+     * 最右一列永远扫不到，而 lo/hi 照样是对的 —— 测试也就照样绿。
+     */
+    var g = { nP: nP, nR: nR, lo: lo, hi: hi, max: max, z: [], px: [], py: [],
+              min: 0, top: null };
+    var mn = Infinity, mx = -Infinity;
+    for (var jj = 0; jj < nP; jj++) g.px.push(lo + (hi - lo) * jj / (nP - 1));
+    for (var ii = 0; ii < nR; ii++) g.py.push(max * ii / (nR - 1));
+    for (var i = 0; i < nR; i++) {
+      var row = [];
+      var rating = g.py[i];
+      for (var j = 0; j < nP; j++) {
+        var price = g.px[j];
+        var oc = window.mapRestOcc(rating, price, d.other);
+        var served = Math.min(d.seats, Math.floor(d.seats * oc.occ));
+        var pr = served * price - d.cost - d.wage;
+        row.push(pr);
+        if (pr < mn) mn = pr;
+        if (pr > mx) { mx = pr; g.top = { price: price, rating: rating, profit: pr }; }
+      }
+      g.z.push(row);
+    }
+    g.min = mn; g.maxv = mx;
+    return g;
+  }
+
+
+  /* ---- 画图。三种，都用 canvas，不引任何库 ---- */
+  function restCv(w, h) {
+    var c = document.createElement('canvas');
+    var dp = Math.min(2, window.devicePixelRatio || 1);
+    c.width = Math.round(w * dp); c.height = Math.round(h * dp);
+    c.style.height = h + 'px';
+    var g = c.getContext('2d');
+    g.scale(dp, dp);
+    return { c: c, g: g, w: w, h: h };
+  }
+  function restCss(n, dflt) {
+    try {
+      var v = getComputedStyle(document.documentElement).getPropertyValue(n);
+      return (v && v.trim()) || dflt;
+    } catch (e) { return dflt; }
+  }
+
+  /**
+   * 折线图。多条曲线共用一个 x 轴，各自归一化到自己的量程 ——
+   * ⚠️ 利润是几万、上座率是 0~1，塞进同一个纵轴的话上座率会压成一条直线。
+   *    所以每条线单独缩放，纵轴不标数，改成在图例里写各自的范围。
+   */
+  function restLines(box, series, markX, xlab) {
+    var W = 620, H = 220, PAD = 28;
+    var cv = restCv(W, H), g = cv.g;
+    var line = restCss('--line', '#243244'), mut = restCss('--mut', '#93a4bd');
+    g.fillStyle = restCss('--panel2', '#0d141d');
+    g.fillRect(0, 0, W, H);
+    /*
+     * ⚠️ 每条线【自带自己的点】（se.pts = [{x, y}]）。
+     *    第一版是所有线共用一个 rows 数组、靠一个闭包计数器轮着取值 ——
+     *    只要有一条线的点数不一样，取到的就全串位了，而画出来的图
+     *    **看着仍然像条正常的曲线**。这种错没法在图上看出来。
+     */
+    var x0 = Infinity, x1 = -Infinity;
+    series.forEach(function (se) {
+      se.pts.forEach(function (p) {
+        if (p.x < x0) x0 = p.x;
+        if (p.x > x1) x1 = p.x;
+      });
+    });
+    var px = function (v) { return PAD + (W - PAD * 2) * (v - x0) / ((x1 - x0) || 1); };
+    g.strokeStyle = line; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(PAD, H - 20); g.lineTo(W - PAD, H - 20); g.stroke();
+    /*
+     * ⚠️ 同一组里的线【共用一个纵轴量程】，不同组各用各的。
+     *    普通服务和优质服务的利润必须共用，不然两条线会各自撑满整张图，
+     *    "哪一档更赚"这件事在图上直接消失了 —— 而两条线各自看都对。
+     */
+    var groups = {};
+    series.forEach(function (se) {
+      var k = se.grp || se.n;
+      if (!groups[k]) groups[k] = { lo: Infinity, hi: -Infinity };
+      se.pts.forEach(function (p) {
+        if (p.y < groups[k].lo) groups[k].lo = p.y;
+        if (p.y > groups[k].hi) groups[k].hi = p.y;
+      });
+    });
+    series.forEach(function (se) {
+      var gr = groups[se.grp || se.n];
+      se.lo = gr.lo; se.hi = gr.hi;
+      var py = function (v) {
+        return (H - 24) - (H - 44) * (v - gr.lo) / ((gr.hi - gr.lo) || 1);
+      };
+      g.strokeStyle = se.c; g.lineWidth = 1.8;
+      g.beginPath();
+      se.pts.forEach(function (p, i) {
+        var X = px(p.x), Y = py(p.y);
+        if (i) g.lineTo(X, Y); else g.moveTo(X, Y);
+      });
+      g.stroke();
+    });
+    if (markX != null) {
+      g.strokeStyle = restCss('--ok', '#86efac');
+      g.setLineDash([4, 3]); g.lineWidth = 1.2;
+      g.beginPath(); g.moveTo(px(markX), 8); g.lineTo(px(markX), H - 20); g.stroke();
+      g.setLineDash([]);
+    }
+    g.fillStyle = mut; g.font = '10px system-ui,sans-serif';
+    g.fillText(String(Math.round(x0)), PAD, H - 7);
+    g.fillText(String(Math.round(x1)), W - PAD - 22, H - 7);
+    g.fillText(xlab, W / 2 - 18, H - 7);
+    box.appendChild(cv.c);
+    var lg = el('div', 'sub');
+    series.forEach(function (se) {
+      var one = el('span');
+      one.style.color = se.c;
+      one.textContent = '■ ' + se.n + ' ' + se.fmt(se.lo) + ' ~ ' + se.fmt(se.hi) + '　';
+      lg.appendChild(one);
+    });
+    box.appendChild(lg);
+  }
+
+  /** 热力图：价格 × 评分 → 利润。精确、能悬停，找最优比 3D 快。 */
+  function restHeat(box, gd) {
+    var W = 620, H = 260, PAD = 34;
+    var cv = restCv(W, H), g = cv.g;
+    g.fillStyle = restCss('--panel2', '#0d141d'); g.fillRect(0, 0, W, H);
+    var cw = (W - PAD - 12) / gd.nP, ch = (H - PAD - 18) / gd.nR;
+    for (var i = 0; i < gd.nR; i++) {
+      for (var j = 0; j < gd.nP; j++) {
+        var t = (gd.z[i][j] - gd.min) / ((gd.maxv - gd.min) || 1);
+        // 亏钱的一律画成暗红 —— 不然一片渐变里看不出哪边是负的
+        if (gd.z[i][j] < 0) g.fillStyle = 'rgba(180,60,60,' + (0.25 + 0.4 * (1 - t)) + ')';
+        else g.fillStyle = 'rgba(125,211,252,' + (0.08 + 0.9 * t) + ')';
+        g.fillRect(PAD + j * cw, H - 18 - (i + 1) * ch, cw + 0.6, ch + 0.6);
+      }
+    }
+    if (gd.top) {
+      var tx = PAD + (gd.top.price - gd.lo) / (gd.hi - gd.lo) * (W - PAD - 12);
+      var ty = H - 18 - gd.top.rating / gd.max * (H - PAD - 18);
+      g.strokeStyle = restCss('--ok', '#86efac'); g.lineWidth = 2;
+      g.beginPath(); g.arc(tx, ty, 5, 0, Math.PI * 2); g.stroke();
+    }
+    g.fillStyle = restCss('--mut', '#93a4bd'); g.font = '10px system-ui,sans-serif';
+    g.fillText('$' + gd.lo, PAD, H - 5);
+    g.fillText('$' + gd.hi, W - 40, H - 5);
+    g.fillText('价格 →', W / 2 - 16, H - 5);
+    g.save(); g.translate(10, H / 2 + 16); g.rotate(-Math.PI / 2);
+    g.fillText('评分 0 → ' + gd.max, 0, 0); g.restore();
+    box.appendChild(cv.c);
+  }
+
+  /**
+   * 3D 曲面，鼠标/手指拖着转。
+   *
+   * ⚠️ 用画家算法（远的先画）。不排序的话近处的面会被远处的盖住，
+   *    转到某个角度整块曲面会像"翻过来"了一样 —— 而它其实一直是对的。
+   */
+  function restSurf(box, gd) {
+    var W = 620, H = 300;
+    var cv = restCv(W, H), g = cv.g;
+    function draw() {
+      g.fillStyle = restCss('--panel2', '#0d141d'); g.fillRect(0, 0, W, H);
+      var cy = Math.cos(REST.yaw), sy = Math.sin(REST.yaw);
+      var cp = Math.cos(REST.pitch), sp = Math.sin(REST.pitch);
+      var span = (gd.maxv - gd.min) || 1;
+      function pt(j, i, z) {
+        var X = (j / (gd.nP - 1) - 0.5) * 2;
+        var Y = (i / (gd.nR - 1) - 0.5) * 2;
+        var Z = ((z - gd.min) / span - 0.5) * 1.4;
+        var rx = X * cy - Y * sy, ry = X * sy + Y * cy;
+        var ry2 = ry * cp - Z * sp, rz = ry * sp + Z * cp;
+        var s = 110 / (3.2 - rz * 0.35);
+        return { x: W / 2 + rx * s * 1.6, y: H / 2 + ry2 * s * 0.95 - 10, d: rz };
+      }
+      var quads = [];
+      for (var i = 0; i < gd.nR - 1; i++) {
+        for (var j = 0; j < gd.nP - 1; j++) {
+          var a = pt(j, i, gd.z[i][j]), b = pt(j + 1, i, gd.z[i][j + 1]);
+          var c = pt(j + 1, i + 1, gd.z[i + 1][j + 1]), dd = pt(j, i + 1, gd.z[i + 1][j]);
+          var zavg = (gd.z[i][j] + gd.z[i][j + 1] + gd.z[i + 1][j + 1] + gd.z[i + 1][j]) / 4;
+          quads.push({ p: [a, b, c, dd], t: (zavg - gd.min) / span,
+                       neg: zavg < 0, d: (a.d + b.d + c.d + dd.d) / 4 });
+        }
+      }
+      quads.sort(function (m, n) { return m.d - n.d; });   // 远的先画
+      quads.forEach(function (q) {
+        g.beginPath();
+        g.moveTo(q.p[0].x, q.p[0].y);
+        for (var k = 1; k < 4; k++) g.lineTo(q.p[k].x, q.p[k].y);
+        g.closePath();
+        g.fillStyle = q.neg ? 'rgba(180,60,60,.6)'
+                            : 'rgba(125,211,252,' + (0.14 + 0.8 * q.t) + ')';
+        g.fill();
+        g.strokeStyle = 'rgba(0,0,0,.25)'; g.lineWidth = 0.4; g.stroke();
+      });
+      g.fillStyle = restCss('--mut', '#93a4bd'); g.font = '10px system-ui,sans-serif';
+      g.fillText('拖动旋转　X = 价格　Y = 评分　高度 = 利润', 12, H - 10);
+    }
+    draw();
+    var drag = null;
+    cv.c.onpointerdown = function (e) {
+      drag = { x: e.clientX, y: e.clientY, yaw: REST.yaw, pitch: REST.pitch };
+      try { cv.c.setPointerCapture(e.pointerId); } catch (e2) {}
+    };
+    cv.c.onpointermove = function (e) {
+      if (!drag) return;
+      REST.yaw = drag.yaw + (e.clientX - drag.x) * 0.01;
+      REST.pitch = Math.max(0.15, Math.min(1.45,
+        drag.pitch + (e.clientY - drag.y) * 0.008));
+      draw();
+    };
+    cv.c.onpointerup = function () { drag = null; };
+    box.appendChild(cv.c);
+  }
+
+  /* ---- 面板 ---- */
+  function restNum(val, ph, on) {
+    var i = document.createElement('input');
+    i.type = 'number'; i.step = 'any';
+    i.value = (val === '' || val == null) ? '' : String(val);
+    i.placeholder = ph;
+    i.onchange = function () { on(i.value); };
+    return i;
+  }
+
+  function restRender() {
+    var box = document.getElementById('scs-restwin');
+    if (!box) return;
+    clear(box);
+    box.appendChild(el('h3', null, '🍽 餐馆优化器'));
+
+    var d = restRead();
+    if (d.err) {
+      box.appendChild(el('div', 'warn', d.err));
+      return;
+    }
+    box.appendChild(el('div', 'sub',
+      '算法【全部直接调页面自己的那几个函数】—— 不抄一份进来。\n' +
+      '⚠️ 评分和上座率这两块本来就是私服自定的（页面上那块黄框写着），' +
+      '所以下面这些「最优」是在那套公式里的最优，不是官方的。'));
+
+    // ---- 抓到的 ----
+    var got = el('div', 'got');
+    [['菜单', d.menu.length + ' 道' + (d.ok ? '' : '（三组没齐）')],
+     ['座位', d.seats.toLocaleString() + '（' + d.lv + ' 级 · ' +
+       (d.style === 'lux' ? '豪华' : '经济型') + '）'],
+     ['总品质', (Math.round(d.qsum * 10) / 10)],
+     ['食材成本', '$' + cmpMoney(d.cost)],
+     ['工资（含管理费）', '$' + cmpMoney(d.wage)],
+     ['同行座位', d.other.toLocaleString()]].forEach(function (o) {
+      var one = el('span');
+      one.appendChild(el('b', null, o[0] + ' '));
+      one.appendChild(document.createTextNode(String(o[1])));
+      got.appendChild(one);
+    });
+    box.appendChild(got);
+    if (d.missMat.length) {
+      box.appendChild(el('div', 'warn',
+        '⚠️ 有 ' + d.missMat.length + ' 样食材仓库里没有 —— 食材成本按【已有的那些】算，' +
+        '所以下面的利润偏高。'));
+    }
+    if (!d.ok) {
+      box.appendChild(el('div', 'warn',
+        '⚠️ 菜单三组没齐（沙拉吧 / 主菜 / 饮品各要至少一道），评分是 0，' +
+        '这一屏算出来的东西没有意义。先把菜单配齐。'));
+      return;
+    }
+
+    // ---- 没填的 ----
+    var free = el('div', 'free');
+    free.appendChild(el('span', null, '空着的就拿来扫：'));
+    free.appendChild(el('span', null, '价格 '));
+    free.appendChild(restNum(REST.price, '不填=扫全程', function (v) {
+      REST.price = v; restRender();
+    }));
+    free.appendChild(el('span', null, '　评分 '));
+    free.appendChild(restNum(REST.rating, '不填=按菜单算', function (v) {
+      REST.rating = v; restRender();
+    }));
+    var sb = el('button', null, REST.staff == null
+      ? '服务：两档都扫' : (REST.staff ? '服务：优质' : '服务：普通'));
+    sb.onclick = function () {
+      REST.staff = (REST.staff == null) ? true : (REST.staff ? false : null);
+      restRender();
+    };
+    free.appendChild(sb);
+    box.appendChild(free);
+
+    var hasP = REST.price !== '' && isFinite(Number(REST.price));
+    var hasR = REST.rating !== '' && isFinite(Number(REST.rating));
+
+    /*
+     * 三种情况，对应三张图。
+     * ⚠️ 顺序是【空着几个】决定的，不是让人去挑图表类型 ——
+     *    挑图表是让人替算法做决定，而他要的是"帮我算哪个最优"。
+     */
+    if (!hasP && !hasR) {
+      // 两个都空：价格 × 评分 的面
+      var gd = restGrid(d, 40, 30);
+      var tabs = el('div', 'tabs');
+      [['heat', '热力图'], ['3d', '3D（可拖动）']].forEach(function (o) {
+        var b = el('button', REST.view === o[0] ? 'on' : null, o[1]);
+        b.onclick = function () { REST.view = o[0]; restRender(); };
+        tabs.appendChild(b);
+      });
+      box.appendChild(tabs);
+      if (REST.view === '3d') restSurf(box, gd); else restHeat(box, gd);
+      if (gd.top) {
+        var bt = el('div', 'best');
+        bt.appendChild(el('b', null, '这张面上最赚的一格：'));
+        bt.appendChild(document.createTextNode(
+          '　价格 $' + Math.round(gd.top.price) +
+          '　评分 ' + (Math.round(gd.top.rating * 100) / 100) +
+          '　这一轮 $' + cmpMoney(gd.top.profit)));
+        box.appendChild(bt);
+      }
+      box.appendChild(el('div', 'sub',
+        '评分那一轴是【假设】—— 它问的是"如果评分是 N，该定多少钱"。\n' +
+        '把评分那一格填上（或者留空让它按你的菜单算），就变成只扫价格的曲线。'));
+      return;
+    }
+
+    if (hasR && !hasP) {
+      // 评分定死，只扫价格
+      restLinesWrap(box, d);
+      return;
+    }
+
+    if (!hasR && hasP) {
+      // 价格定死，扫评分 → 上座率
+      var rc = restRatingCurve(d, Number(REST.price));
+      restLines(box, [
+        { n: '上座率', c: '#7dd3fc',
+          pts: rc.map(function (r) { return { x: r.rating, y: r.occ }; }),
+          fmt: function (v) { return (v * 100).toFixed(1) + '%'; } },
+        { n: '这一轮利润', c: '#86efac',
+          pts: rc.map(function (r) { return { x: r.rating, y: r.profit }; }),
+          fmt: function (v) { return '$' + cmpMoney(v); } },
+      ], null, '评分 →');
+      var now = window.mapRestRating({ menu: d.menu, price: Number(REST.price),
+                                       staff: d.staff, style: d.style });
+      box.appendChild(el('div', 'best',
+        '你现在这份菜单算出来的评分是 ' + (Math.round(now.r * 100) / 100) +
+        '，对应上座率 ' +
+        (window.mapRestOcc(now.r, Number(REST.price), d.other).occ * 100).toFixed(1) + '%'));
+      return;
+    }
+
+    // 两个都填了：只报一个数
+    var one = restOne(d, Number(REST.price), d.staff);
+    box.appendChild(el('div', 'best',
+      '价格 $' + REST.price + '：评分 ' + (Math.round(one.rating * 100) / 100) +
+      '　上座率 ' + (one.occ * 100).toFixed(1) + '%　上菜 ' +
+      one.served.toLocaleString() + '　这一轮 $' + cmpMoney(one.profit)));
+    box.appendChild(el('div', 'sub', '把价格那一格清空，就会扫全程画曲线。'));
+  }
+
+  /** 只扫价格那一张：一档服务 or 两档一起比。 */
+  function restLinesWrap(box, d) {
+    var archs = (REST.staff == null) ? [false, true] : [REST.staff];
+    var all = archs.map(function (st) { return { st: st, rows: restSweep(d, st) }; });
+    var COL = { p: '#7dd3fc', s: '#f0abfc' };
+
+    var winner = null;
+    all.forEach(function (a) {
+      var b = restBest(a.rows);
+      if (!winner || b.profit > winner.profit) winner = b;
+    });
+
+    // 利润：两档共用一个纵轴（grp 一样），不然比不出高低
+    restLines(box, all.map(function (a) {
+      return { n: (a.st ? '优质服务' : '普通服务') + ' · 利润', grp: 'profit',
+               c: a.st ? COL.s : COL.p,
+               pts: a.rows.map(function (r) { return { x: r.price, y: r.profit }; }),
+               fmt: function (v) { return '$' + cmpMoney(v); } };
+    }), winner ? winner.price : null, '价格 →');
+
+    // 评分和上座率单独一张 —— 和利润不是一个量级，塞一起会压成直线
+    restLines(box, [
+      { n: '评分', c: '#facc15',
+        pts: all[0].rows.map(function (r) { return { x: r.price, y: r.rating }; }),
+        fmt: function (v) { return String(Math.round(v * 100) / 100); } },
+      { n: '上座率', c: '#86efac',
+        pts: all[0].rows.map(function (r) { return { x: r.price, y: r.occ }; }),
+        fmt: function (v) { return (v * 100).toFixed(1) + '%'; } },
+    ], winner ? winner.price : null, '价格 →');
+
+    if (winner) {
+      var bt = el('div', 'best');
+      bt.appendChild(el('b', null, '利润最高：'));
+      bt.appendChild(document.createTextNode(
+        '　价格 $' + winner.price + '　' + (winner.staff ? '优质服务' : '普通服务') +
+        '　评分 ' + (Math.round(winner.rating * 100) / 100) +
+        '　上座率 ' + (winner.occ * 100).toFixed(1) + '%' +
+        '　上菜 ' + winner.served.toLocaleString() +
+        '（浪费 ' + winner.spoiled.toLocaleString() + '）' +
+        '　这一轮 $' + cmpMoney(winner.profit)));
+      box.appendChild(bt);
+      if (winner.profit < 0) {
+        bt = el('div', 'warn');
+        bt.textContent = '⚠️ 最赚的那一档也是亏的 —— 这份菜单在当前规模下没有赚钱的价位。\n' +
+          '往上抬品质、往上加道数（多样性系数会降用料），或者关掉优质服务。';
+        box.appendChild(bt);
+      }
+      if (archs.length === 2) {
+        var lo = restBest(all[0].rows), hi = restBest(all[1].rows);
+        var tip = el('div', 'sub');
+        /*
+         * ⚠️ 这句话里【不写死任何系数】。
+         *    "优质服务换 N 分评分"那个 N 是页面上的常数，抄进来就会跟着漂 ——
+         *    所以直接量：拿两档在同一个价位上的评分差报出来。
+         *    量出来的数永远和页面一致，页面改了它自己就跟着改。
+         */
+        var dR = hi.rating - restOne(d, hi.price, false).rating;
+        tip.textContent = '两档各自的最优：普通 $' + lo.price + ' → ' + cmpMoney(lo.profit) +
+          '　优质 $' + hi.price + ' → ' + cmpMoney(hi.profit) +
+          '　差 ' + cmpMoney(Math.abs(hi.profit - lo.profit)) +
+          '（优质服务多花 ' + cmpMoney(hi.wage - lo.wage) + ' 工资，换 ' +
+          (Math.round(dR * 100) / 100) + ' 分评分）';
+        box.appendChild(tip);
+      }
+    }
+  }
+
+  /** 什么时候把那个按钮亮出来。 */
+  function restWatch() {
+    var sync = function () {
+      var on = false;
+      try {
+        on = document.body.classList.contains('mode-map') && !restReady();
+        if (on) {
+          var d = restRead();
+          on = !d.err;
+        }
+      } catch (e) { on = false; }
+      var fab = document.getElementById('scs-rest');
+      if (fab) fab.style.display = on ? '' : 'none';
+      if (!on) {
+        var w = document.getElementById('scs-restwin');
+        if (w) w.style.display = 'none';
+      }
+    };
+    sync();
+    try {
+      new MutationObserver(sync).observe(document.body,
+        { attributes: true, attributeFilter: ['class'], childList: true, subtree: true });
+    } catch (e) {}
+    try { setInterval(sync, 1500); } catch (e) {}
+  }
 
   function buildUI() {
     var style = document.createElement('style');
@@ -919,6 +2030,45 @@
     fab.id = 'scs-fab';
     fab.title = '词频统计';
     document.body.appendChild(fab);
+
+    /*
+     * 合同对比：一个悬浮键 + 一层放小窗的画布。
+     * 两个都常驻在 body 上（不是塞进页面某个容器里）——
+     * 页面自己重画侧栏/消息流的时候不会把它们连带删掉。
+     */
+    var cfab = el('button', null, '⚖');
+    cfab.id = 'scs-cmp';
+    cfab.title = '合同对比：把这张单子分裂成一个可拖动的小窗';
+    cfab.onclick = cmpSplit;
+    document.body.appendChild(cfab);
+
+    /*
+     * 餐馆优化器：一个悬浮键 + 一块面板，都常驻在 body 上。
+     * 只有在【游戏模拟里点开了一栋餐馆】的时候才亮出来 ——
+     * 别的模式下它没有任何意义，摆着只会挡东西。
+     */
+    var rfab = el('button', null, '🍽');
+    rfab.id = 'scs-rest';
+    rfab.title = '餐馆优化器：扫价格 / 服务 / 评分，找利润最高那一档';
+    rfab.onclick = function () {
+      var w = document.getElementById('scs-restwin');
+      if (!w) return;
+      var show = w.style.display === 'none' || !w.style.display;
+      w.style.display = show ? 'block' : 'none';
+      if (show) restRender();
+    };
+    document.body.appendChild(rfab);
+    var rwin = el('div');
+    rwin.id = 'scs-restwin';
+    document.body.appendChild(rwin);
+
+    var wins = el('div');
+    wins.id = 'scs-wins';
+    document.body.appendChild(wins);
+
+    var cbar = el('div');
+    cbar.id = 'scs-cmpbar';
+    document.body.appendChild(cbar);
 
     var box = el('div');
     box.id = 'scs';
@@ -1640,6 +2790,9 @@
     if (document.getElementById('scs-fab')) return;   // 别装两次
     loadTZ();
     buildUI();
+    cmpWatchMode();
+    restWatch();
+    cmpRender();
 
     // 转屏或改窗口宽度时，如果跨过了那条 700px 的界线就重画一次 ——
     // 表格是按宽度决定列数的（不是靠 CSS 藏列），不重画就还是旧的列。
