@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sim Companies 聊天存档 · 词频统计
 // @namespace    https://github.com/Hoshino-Saisho/simco-public
-// @version      1.9.0
+// @version      1.9.1
 // @description  聊天存档增强：① 词频统计（按小时/天/发送者/房间，支持排除词、强弱词三档、自定时区、图标码转名字、导出 CSV）② 销售办公室合同对比 —— 把多张单子并排摆开，比时利和利润率 ③ 餐馆优化器 —— 扫价格/服务/评分，画曲线和热力图，直接指出利润最高那一档
 // @author       —
 // @match        https://simco-chat.cc.cd/*
@@ -1456,12 +1456,31 @@
    *   代价是：页面版本太老（没有那几个函数）时，这个功能**直接不开**，
    *   并且说清楚为什么。宁可不给，也不给一份自己算的。
    */
-  var REST_FN = ['mapRestRating', 'mapRestOcc', 'mapRestNeed', 'mapRestWage',
+  /*
+   * ⚠️ 页面整个包在一个 IIFE 里 —— 它内部的函数【一个都不在 window 上】。
+   *
+   *   第一版我直接写 RW('mapRestRating')(...)：语法没问题、测试全绿
+   *   （测试里是自己塞的假函数），但在真页面上那个悬浮键**永远不亮**，
+   *   而且不报任何错。"能跑的测试 + 不动的功能"是最难查的一种。
+   *
+   *   现在页面在收尾处明确导出一张表 window.SIMCO_MAP。
+   *   下面这个 RW() 就从那张表里取；顺带也认裸的 window.xxx，
+   *   万一以后页面换了暴露方式，插件不用跟着改。
+   */
+  var REST_FN = ['MAP', 'mapCur', 'mapListAt', 'mapLvNow', 'mapStock', 'mapStockQ',
+                 'mapRestRating', 'mapRestOcc', 'mapRestNeed', 'mapRestWage',
                  'mapRestSeats', 'mapRestMenuOk', 'mapRestOtherSeats',
-                 'MAP_REST_PRICE_MIN', 'MAP_REST_PRICE_MAX', 'MAP_REST_RATING_MAX'];
+                 'mapRestAt', 'mapRestCfgAt', 'mapRestStyle',
+                 'MAP_REST_PRICE_MIN', 'MAP_REST_PRICE_MAX', 'MAP_REST_RATING_MAX',
+                 'MAP_REST_BLD'];
+  function RW(n) {
+    var box = window.SIMCO_MAP;
+    if (box && typeof box[n] !== 'undefined') return box[n];
+    return window[n];
+  }
   function restReady() {
     for (var i = 0; i < REST_FN.length; i++) {
-      if (typeof window[REST_FN[i]] === 'undefined') return REST_FN[i];
+      if (typeof RW(REST_FN[i]) === 'undefined') return REST_FN[i];
     }
     return null;
   }
@@ -1475,32 +1494,32 @@
     if (miss) return { err: '页面上找不到 ' + miss + ' —— 存档站的版本太老了。\n' +
                             '这个功能靠直接调页面自己的餐馆算法，不自己抄一份，' +
                             '所以缺了就不开。刷新一下、或者等站点更新。' };
-    var MAP = window.MAP;
+    var MAP = RW('MAP');
     if (!MAP) return { err: '页面上没有 MAP —— 先进「游戏模拟」那个模式。' };
     var x = null;
     try {
-      window.mapListAt(window.mapCur()).forEach(function (b) {
+      RW('mapListAt')(RW('mapCur')()).forEach(function (b) {
         if (b.k === MAP.sel) x = b;
       });
     } catch (e) {}
-    if (!x || x.b !== '餐馆') return { err: '先在「游戏模拟」里点开一栋餐馆。' };
+    if (!x || x.b !== RW('MAP_REST_BLD')) {
+      return { err: '先在「游戏模拟」里点开一栋餐馆。' };
+    }
 
-    var live = window.mapRestAt ? window.mapRestAt(x.k, window.mapCur()) : null;
-    var eff = (live && window.mapRestCfgAt)
-      ? window.mapRestCfgAt(live, window.mapCur()) : null;
+    var live = RW('mapRestAt')(x.k, RW('mapCur')());
+    var eff = live ? RW('mapRestCfgAt')(live, RW('mapCur')()) : null;
     var dr = (MAP.rdraft || {})[x.k] || {};
     var menu = (eff && eff.menu) || dr.menu || [];
-    var style = live ? live.style
-      : (window.mapRestStyle ? window.mapRestStyle(x.k, window.mapCur()) : 'eco');
-    var lv = window.mapLvNow(x);
+    var style = live ? live.style : RW('mapRestStyle')(x.k, RW('mapCur')());
+    var lv = RW('mapLvNow')(x);
     var staff = (REST.staff == null)
       ? !!((eff && eff.staff) || dr.staff) : REST.staff;
 
     // 食材成本：按仓库里的均价算这一轮要花多少
     var cost = 0, missMat = [];
     try {
-      window.mapRestNeed(menu, lv, style).forEach(function (u) {
-        var g = window.mapStock(u.id);
+      RW('mapRestNeed')(menu, lv, style).forEach(function (u) {
+        var g = RW('mapStock')(u.id);
         if (!g) { missMat.push(u.id); return; }
         cost += g.c * u.n;
       });
@@ -1508,17 +1527,17 @@
 
     var qsum = 0;
     try {
-      menu.forEach(function (id) { qsum += window.mapStockQ(id); });
+      menu.forEach(function (id) { qsum += RW('mapStockQ')(id); });
     } catch (e) {}
 
     return {
       x: x, lv: lv, style: style, menu: menu, staff: staff,
-      seats: window.mapRestSeats(lv, style),
+      seats: RW('mapRestSeats')(lv, style),
       cost: cost, missMat: missMat, qsum: qsum,
-      wage: window.mapRestWage(lv, style, staff),
-      wageAlt: window.mapRestWage(lv, style, !staff),
-      other: window.mapRestOtherSeats(x.k, window.mapCur()),
-      ok: window.mapRestMenuOk(menu),
+      wage: RW('mapRestWage')(lv, style, staff),
+      wageAlt: RW('mapRestWage')(lv, style, !staff),
+      other: RW('mapRestOtherSeats')(x.k, RW('mapCur')()),
+      ok: RW('mapRestMenuOk')(menu),
       livePrice: eff ? eff.price : (dr.price || null),
       running: !!live,
     };
@@ -1527,11 +1546,11 @@
   /** 一个价格 / 一个服务档下的整轮账。全部走页面自己的函数。 */
   function restOne(d, price, staff) {
     var cfg = { menu: d.menu, price: price, staff: staff, style: d.style };
-    var rt = window.mapRestRating(cfg);
-    var oc = window.mapRestOcc(rt.r, price, d.other);
+    var rt = RW('mapRestRating')(cfg);
+    var oc = RW('mapRestOcc')(rt.r, price, d.other);
     var seats = d.seats;
     var served = Math.min(seats, Math.floor(seats * oc.occ));
-    var wage = window.mapRestWage(d.lv, d.style, staff);
+    var wage = RW('mapRestWage')(d.lv, d.style, staff);
     return { price: price, staff: staff, rating: rt.r, occ: oc.occ,
              served: served, spoiled: seats - served,
              revenue: served * price,
@@ -1540,7 +1559,7 @@
 
   /** 价格从头扫到尾。步长取整块的 1 元，350−60 就 291 个点，够密也够快。 */
   function restSweep(d, staff) {
-    var lo = window.MAP_REST_PRICE_MIN, hi = window.MAP_REST_PRICE_MAX;
+    var lo = RW('MAP_REST_PRICE_MIN'), hi = RW('MAP_REST_PRICE_MAX');
     var out = [];
     for (var p = lo; p <= hi; p++) out.push(restOne(d, p, staff));
     return out;
@@ -1556,10 +1575,10 @@
    * 评分本身不扫价格 —— 它是"假设评分是 N，上座率会是多少"。
    */
   function restRatingCurve(d, price) {
-    var out = [], max = window.MAP_REST_RATING_MAX;
+    var out = [], max = RW('MAP_REST_RATING_MAX');
     for (var i = 0; i <= 100; i++) {
       var r = max * i / 100;
-      var oc = window.mapRestOcc(r, price, d.other);
+      var oc = RW('mapRestOcc')(r, price, d.other);
       var served = Math.min(d.seats, Math.floor(d.seats * oc.occ));
       out.push({ rating: r, occ: oc.occ, served: served,
                  profit: served * price - d.cost - d.wage });
@@ -1568,8 +1587,8 @@
   }
   /** 价格 × 评分 的网格（两个都没填时用）。 */
   function restGrid(d, nP, nR) {
-    var lo = window.MAP_REST_PRICE_MIN, hi = window.MAP_REST_PRICE_MAX;
-    var max = window.MAP_REST_RATING_MAX;
+    var lo = RW('MAP_REST_PRICE_MIN'), hi = RW('MAP_REST_PRICE_MAX');
+    var max = RW('MAP_REST_RATING_MAX');
     /*
      * px / py 存的是【真的被扫到的那些坐标】。
      * 只存 lo / hi 的话，格子切错一格（j/nP 而不是 j/(nP−1)）
@@ -1585,7 +1604,7 @@
       var rating = g.py[i];
       for (var j = 0; j < nP; j++) {
         var price = g.px[j];
-        var oc = window.mapRestOcc(rating, price, d.other);
+        var oc = RW('mapRestOcc')(rating, price, d.other);
         var served = Math.min(d.seats, Math.floor(d.seats * oc.occ));
         var pr = served * price - d.cost - d.wage;
         row.push(pr);
@@ -1910,12 +1929,12 @@
           pts: rc.map(function (r) { return { x: r.rating, y: r.profit }; }),
           fmt: function (v) { return '$' + cmpMoney(v); } },
       ], null, '评分 →');
-      var now = window.mapRestRating({ menu: d.menu, price: Number(REST.price),
+      var now = RW('mapRestRating')({ menu: d.menu, price: Number(REST.price),
                                        staff: d.staff, style: d.style });
       box.appendChild(el('div', 'best',
         '你现在这份菜单算出来的评分是 ' + (Math.round(now.r * 100) / 100) +
         '，对应上座率 ' +
-        (window.mapRestOcc(now.r, Number(REST.price), d.other).occ * 100).toFixed(1) + '%'));
+        (RW('mapRestOcc')(now.r, Number(REST.price), d.other).occ * 100).toFixed(1) + '%'));
       return;
     }
 
@@ -1996,16 +2015,28 @@
   }
 
   /** 什么时候把那个按钮亮出来。 */
+  /*
+   * 便宜的那道门：只看「在地图模式 + 选中的那栋是餐馆」。
+   * ⚠️ 这里【不能】调 restRead() —— 它会去算食材、工资、评分，
+   *    而这个 sync 是挂在 MutationObserver 上的，页面每重画一次就跑一遍。
+   */
+  function restOn() {
+    try {
+      if (!document.body.classList.contains('mode-map')) return false;
+      if (restReady()) return false;
+      var MAP = RW('MAP');
+      if (!MAP || !MAP.sel) return false;
+      var hit = false;
+      RW('mapListAt')(RW('mapCur')()).forEach(function (b) {
+        if (b.k === MAP.sel && b.b === RW('MAP_REST_BLD')) hit = true;
+      });
+      return hit;
+    } catch (e) { return false; }
+  }
+
   function restWatch() {
     var sync = function () {
-      var on = false;
-      try {
-        on = document.body.classList.contains('mode-map') && !restReady();
-        if (on) {
-          var d = restRead();
-          on = !d.err;
-        }
-      } catch (e) { on = false; }
+      var on = restOn();
       var fab = document.getElementById('scs-rest');
       if (fab) fab.style.display = on ? '' : 'none';
       if (!on) {
