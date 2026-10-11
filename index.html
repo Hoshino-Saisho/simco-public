@@ -122,11 +122,13 @@
   #bar .spacer{flex:1}
   #q{max-width:300px}
   #burger{display:none;background:none;border:0;color:var(--tx);font-size:19px;cursor:pointer;padding:0 4px}
-  #setbtn{display:inline-flex;align-items:center;background:none;border:0;color:var(--tx);font-size:18px;cursor:pointer;padding:0 6px;line-height:1}
-  #setbtn:hover{color:var(--acc)}
-  #setmenu{position:fixed;right:12px;top:48px;z-index:40;width:290px;max-width:calc(100vw - 24px);max-height:76vh;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.4)}
-  #setmenu .sec{border-top:1px solid var(--line)}
-  #setmenu .sec:first-child{border-top:0}
+  #dispbtn{display:flex;align-items:center;justify-content:space-between;width:100%;background:none;border:0;color:var(--tx);font:inherit;font-weight:600;cursor:pointer;padding:0}
+  #dispbtn:hover{color:var(--acc)}
+  #dispbtn .caret{color:var(--dim);font-size:11px;transition:transform .15s}
+  #dispbtn[aria-expanded="true"] .caret{transform:rotate(90deg)}
+  #dispbody{margin-top:8px}
+  #dispbody .sec{padding:9px 0 0;border-top:1px solid var(--line);margin-top:9px}
+  #dispbody .sec h2{margin-top:0}
 
   /*
    * ================= 正文列的宽度 + 右边预留的那一栏 =================
@@ -1123,9 +1125,12 @@
           transition:transform .22s ease;box-shadow:0 0 40px rgba(0,0,0,.6)}
     body.nav #side{transform:none}
     body.nav #scrim{display:block;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:20}
-    #burger{display:block}
-    #q{max-width:none;flex:1}
+    #burger{display:block;flex:0 0 auto;padding:0 8px;font-size:22px}
+    #q{max-width:none;flex:1 1 auto;min-width:0}
+    #bar{gap:6px}
     #bar .sub,#bar .title{display:none}
+    .modetabs{flex:0 0 auto}
+    .modetabs button{padding:4px 7px;font-size:11px}
     .msg{padding-left:12px;padding-right:12px}
     .daysep{margin-left:12px;margin-right:12px}
   }
@@ -1258,6 +1263,15 @@
     <h2>工具</h2>
     <div id="toolrow"></div>
   </div>
+  <div class="sec" id="dispset">
+    <button type="button" class="dispbtn" id="dispbtn" aria-expanded="false">
+      <span>⚙ 显示设置</span><span class="caret" id="dispcaret">▸</span>
+    </button>
+    <div id="dispbody" hidden>
+      <label class="opt"><input type="checkbox" id="reltime"><span>显示相对时间（几分钟 / 几小时前）</span></label>
+      <div class="note">开启后每条消息显示“多久以前”，鼠标悬停看具体时间。</div>
+    </div>
+  </div>
 
   <!--
     正文列宽。手机上这一段是藏起来的（那边本来就没有多余的横向空间）。
@@ -1321,15 +1335,6 @@
     <span class="sub" id="bsub"></span>
     <span class="spacer"></span>
     <input type="search" id="q" placeholder="搜索消息内容…">
-    <button id="setbtn" aria-label="设置" title="设置">☰</button>
-  </div>
-  <div id="setmenu" hidden>
-    <div class="sec">
-      <h2>时间显示</h2>
-      <label class="opt"><input type="checkbox" id="reltime"><span>显示相对时间（几分钟 / 几小时前）</span></label>
-      <div class="note">开启后每条消息显示“多久以前”，鼠标悬停看具体时间。</div>
-    </div>
-    <div id="setmoved"></div>
   </div>
   <div id="hidebar"></div>
   <div id="expbar"></div>
@@ -1470,7 +1475,7 @@ function supRecent() {
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = 'f7b23a7098cb';
+var PAGE_BUILD = 'cfee33241199';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -12055,15 +12060,15 @@ function refreshRelTimes() {
 setInterval(function () { if (sel.relTime) refreshRelTimes(); }, 60000);
 
 (function () {
-  /* 把「显示偏好」几块原样搬进设置菜单（只挪位置，不改标签/行为） */
-  var moved = document.getElementById('setmoved');
-  if (moved) {
+  /* 把「显示偏好」几块原样搬进侧栏「显示设置」折叠区（只挪位置，不改标签/行为） */
+  var body = document.getElementById('dispbody');
+  if (body) {
     var ws = document.getElementById('widthsec');
-    if (ws) moved.appendChild(ws);
+    if (ws) body.appendChild(ws);
     var dim = document.getElementById('dimwrap');
-    if (dim) { var w = document.createElement('div'); w.className = 'sec'; w.appendChild(dim); moved.appendChild(w); }
+    if (dim) { var w = document.createElement('div'); w.className = 'sec'; w.appendChild(dim); body.appendChild(w); }
     var g = document.getElementById('gullwrap');
-    if (g && g.parentNode) moved.appendChild(g.parentNode);
+    if (g && g.parentNode) body.appendChild(g.parentNode);
   }
   /* 相对时间开关 */
   var cb = document.getElementById('reltime');
@@ -12071,16 +12076,20 @@ setInterval(function () { if (sel.relTime) refreshRelTimes(); }, 60000);
     cb.checked = !!sel.relTime;
     cb.onchange = function () { sel.relTime = cb.checked; savePref(); refreshRelTimes(); };
   }
-  /* ☰ 设置按钮：开合 + 点外面关掉 */
-  var sbtn = document.getElementById('setbtn'), smenu = document.getElementById('setmenu');
-  if (sbtn && smenu) {
-    sbtn.onclick = function (e) { e.stopPropagation(); smenu.hidden = !smenu.hidden; };
-    document.addEventListener('click', function (e) {
-      if (smenu.hidden) return;
-      if (e.target === sbtn || smenu.contains(e.target)) return;
-      smenu.hidden = true;
-    });
+  /* ⚙ 显示设置：点标题展开 / 收起 */
+  var db = document.getElementById('dispbtn'), dbody = document.getElementById('dispbody');
+  if (db && dbody) {
+    db.onclick = function () {
+      var willOpen = dbody.hidden;
+      dbody.hidden = !willOpen;
+      db.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+    };
   }
+  /* 手机上点搜索框，把它滚进可视区（输入时不被布局挡住） */
+  var q = document.getElementById('q');
+  if (q) q.addEventListener('focus', function () {
+    setTimeout(function () { try { q.scrollIntoView({ block: 'nearest' }); } catch (e) {} }, 60);
+  });
 })();
 $('#scrim').onclick = function () { document.body.classList.remove('nav'); };
 document.addEventListener('keydown', function (e) {
