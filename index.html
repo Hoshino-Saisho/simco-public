@@ -23,7 +23,7 @@
   default-src 'none';
   script-src 'unsafe-inline';
   style-src 'unsafe-inline';
-  connect-src 'self';
+  connect-src 'self' https://fiatjustitia093.github.io;
   img-src https://d1fxy698ilbz6u.cloudfront.net https://snipboard.io https://i.snipboard.io data:;
   base-uri 'none';
   form-action 'none';
@@ -1392,6 +1392,58 @@
 // 数据目录（相对路径 = 同源，配合 CSP 的 connect-src 'self'）
 var DATA = './data';
 
+/* ====================== 支持者频道（外接朋友的 GitHub） ======================
+ * Supporter 房间只有朋友的账号能采，他发布到他自己的 GitHub Pages 仓库。
+ * 这里把那份数据【拼】进来：索引并进 INDEX.days；取 Supporter 的日文件时
+ * 换成他的地址、并强制按 .gz 取（GitHub Pages 上只有 .json.gz）。
+ * 两边各写各的仓库，永不共享任何键，所以不会再互相覆盖；他的站挂了也只是
+ * 这个频道暂时没有，不影响本站其它房间。（CSP 的 connect-src 已放行他的域名。）
+ */
+var SUP_ROOM = 'Supporter';
+var SUP_BASE = 'https://fiatjustitia093.github.io/simco-supporter/data';
+var SUP_DAYS = [];            // 朋友索引里属于 Supporter 的那些天（已打 _sup 标）
+
+/** 把 SUP_DAYS 并进某份索引（按 房间|日期 去重，可反复调用）。 */
+function mergeSup(idx) {
+  if (!idx || !SUP_DAYS.length) return;
+  if (!idx.days) idx.days = [];
+  var seen = {};
+  idx.days.forEach(function (d) { seen[d.room + '|' + d.day] = 1; });
+  SUP_DAYS.forEach(function (d) {
+    if (!seen[d.room + '|' + d.day]) idx.days.push(d);
+  });
+}
+
+/** 拉朋友那份索引，挑出 Supporter 的天并入；成功后顺带拉一次他的快通道。 */
+function supIndexLoad() {
+  return getJSON(SUP_BASE + '/index.json').then(function (ix) {
+    SUP_DAYS = ((ix && ix.days) || [])
+      .filter(function (d) { return d.room === SUP_ROOM && (d.n || 0) > 0; })
+      .map(function (d) { var e = {}; for (var k in d) e[k] = d[k]; e._sup = true; return e; });
+    if (INDEX) {
+      mergeSup(INDEX);
+      renderSidebar();
+      if (sel.room === SUP_ROOM) renderFiles();
+    }
+    return supRecent();
+  }).catch(function () { /* 他的站拿不到就当这个频道暂时没有，不影响本站 */ });
+}
+
+/** 朋友的快通道（最近一小包），让支持者频道也有分钟级新鲜度。纯尽力，不报错。 */
+function supRecent() {
+  return getPack(SUP_BASE + '/recent.json', false, '.gz').then(function (rec) {
+    var added = 0;
+    (((rec && rec.packs)) || []).forEach(function (p) {
+      if (p.room !== SUP_ROOM) return;
+      added += addAll(expand(p));
+      RECENT_ROOMS[p.room] = (p.rows || []).length;
+    });
+    if (INDEX) renderSidebar();
+    if (added && sel.room === SUP_ROOM) { renderFiles(); refresh(true); }
+  }).catch(function () { /* GitHub 上可能没有 recent，正常 */ });
+}
+
+
 /*
  * 页面自己的版本号。构建时由 cloudflare/build.js 按整份 HTML 的内容算出来，
  * 两个部署上都显示在侧栏底部。
@@ -1840,8 +1892,8 @@ var ENC_PLAIN = {};      // 路径 -> true：这一天在这个部署上是明�
  * 取一个日文件 / recent 包。索引说是 gz 就先解压再当 JSON 读。
  * path 传的是【不带 .gz】的路径，后缀在这里加。
  */
-function getPack(path, reuse) {
-  var suf = encSuffix();
+function getPack(path, reuse, encForce) {
+  var suf = (encForce === undefined) ? encSuffix() : encForce;
   if (!suf || ENC_PLAIN[path]) return getJSON(path, reuse);
   if (!canGunzip()) {
     return Promise.reject(new Error(
@@ -1900,7 +1952,8 @@ function loadDays(items) {
      * 换不来任何一条消息。**放弃得快，才有机会去重试或换线路。**
      */
     if (streak >= NET_GIVEUP) { gaveUp += todo.length + 1; todo.length = 0; return Promise.resolve(); }
-    return getPack(DATA + '/d/' + encodeURIComponent(d.room) + '/' + encodeURIComponent(d.day) + '.json')
+    var _b = d._sup ? SUP_BASE : DATA, _e = d._sup ? '.gz' : undefined;
+    return getPack(_b + '/d/' + encodeURIComponent(d.room) + '/' + encodeURIComponent(d.day) + '.json', false, _e)
       .then(function (pack) {
         // 数据照收：换了房间也不浪费已经拿到的东西，addAll 是按 id 去重的全局表
         added += addAll(expand(pack));
@@ -8324,6 +8377,7 @@ function boot() {
     // 只按条数过滤，不按 published 过滤。published:false 只表示"这天还有一部分
     // 没传上去"，已经传上去的那部分是真实存在的，不该被藏起来。
     INDEX.days = (ix.days || []).filter(function (d) { return (d.n || 0) > 0; });
+    mergeSup(INDEX); supIndexLoad();
     // 现在才知道这个站是不是压缩存的 —— 等在门口的鸥子/文章可以走了
     indexSettled_();
     if (!encReady()) return;
@@ -9415,8 +9469,9 @@ function deepRun(d) {
     var before = d.msgs.length;
 
     return Promise.all(take.map(function (it) {
-      return getPack(DATA + '/d/' + encodeURIComponent(it.room) + '/' +
-                     encodeURIComponent(it.day) + '.json', true)
+      var _b = it._sup ? SUP_BASE : DATA, _e = it._sup ? '.gz' : undefined;
+      return getPack(_b + '/d/' + encodeURIComponent(it.room) + '/' +
+                     encodeURIComponent(it.day) + '.json', true, _e)
         .then(function (pack) {
           d.fetched++;
           var msgs = expand(pack);
@@ -11852,6 +11907,7 @@ function refreshAll() {
     // 只按条数过滤，不按 published 过滤。published:false 只表示"这天还有一部分
     // 没传上去"，已经传上去的那部分是真实存在的，不该被藏起来。
     INDEX.days = (ix.days || []).filter(function (d) { return (d.n || 0) > 0; });
+    mergeSup(INDEX); supIndexLoad();
     indexSettled_();
     if (!encReady()) return;
     sel.room = pickRoom();
