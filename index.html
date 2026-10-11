@@ -770,6 +770,15 @@
     background:rgba(255,255,255,.06);border-radius:3px;padding:0 4px}
 
   #feed{flex:1;overflow-y:auto;padding:8px 0 60px;overscroll-behavior:contain}
+  /* ★ 频道横幅外观 */
+  #roombanner{flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:8px 16px;
+    background:rgba(125,211,252,.12);border-bottom:1px solid var(--line);color:var(--acc);
+    font-size:13px;font-weight:600}
+  #roombanner #rbtext{flex:1;min-width:0}
+  #roombanner #rbmin{flex:0 0 auto;background:none;border:0;color:var(--acc);font-size:16px;
+    cursor:pointer;line-height:1;padding:0 6px}
+  #roombanner.mini{padding:2px 16px}
+  #roombanner.mini #rbtext{display:none}
   .placeholder{height:100%;display:flex;flex-direction:column;align-items:center;
     justify-content:center;color:var(--dim);gap:10px;text-align:center;padding:24px}
   .placeholder .big{font-size:44px;opacity:.35}
@@ -1358,6 +1367,11 @@
   <div id="hidebar"></div>
   <div id="expbar"></div>
   <div id="deep"></div>
+  <!-- 频道横幅：只在 ROOM_BANNER 里列出的房间显示；压缩消息区、不遮挡、可收起 -->
+  <div id="roombanner" hidden>
+    <span id="rbtext">请不要在聊天室里提及你是使用了本网页获取的支持者频道信息，如果遭到询问一律回答朋友说的</span>
+    <button type="button" id="rbmin" aria-label="收起" title="收起 / 展开">—</button>
+  </div>
   <!--
     正文列 + 右边预留的那一栏。
     #col 里面的东西（AI 卡、消息流）宽度受 --colmax 限制；
@@ -1441,6 +1455,13 @@ var SUP_ROOM = 'Supporter';
 var SUP_BASE = 'https://fiatjustitia093.github.io/simco-supporter/data';
 var SUP_DAYS = [];            // 朋友索引里属于 Supporter 的那些天（已打 _sup 标）
 
+/* ★★★ 频道横幅 —— 选中这里列出的房间时，顶部显示一条横幅（压缩消息区、可收起）。
+ *     想改文字：改右边的字；想给别的房间也加横幅：按 房间key: '文字' 再写一行。
+ *     房间 key 和房间表 ROOMS / ROOM_LABEL 用的是同一套（Supporter、ZH、X …）。*/
+var ROOM_BANNER = {
+  Supporter: '请不要在聊天室里提及你是使用了本网页获取的支持者频道信息，如果遭到询问一律回答朋友说的',
+};
+
 /** 把 SUP_DAYS 并进某份索引（按 房间|日期 去重，可反复调用）。 */
 function mergeSup(idx) {
   if (!idx || !SUP_DAYS.length) return;
@@ -1494,7 +1515,7 @@ function supRecent() {
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = '365ee25fdb4c';
+var PAGE_BUILD = '66fbebe112ce';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -7571,7 +7592,7 @@ function renderMapRest(box, x) {
     dr.price = n; mapSave(); renderMap();
   }, '80px'));
   pb.appendChild(el('span', 'mu',
-    '$' + MAP_REST_PRICE_MIN + '~$' + MAP_REST_PRICE_MAX + '　'));
+    ''+MAPRESTPRICEMIN+'~' + MAP_REST_PRICE_MAX + '　'));
   /*
    * ⚠️ $96 在评分和上座率里【各扣一次】 —— 超过甜点位是双重惩罚。
    *    只在一处提的话，会以为定高一点只是少点评分。
@@ -10886,7 +10907,7 @@ var GULL_FALLBACK = null;
 
 /** 行指纹：**认内容不认行号**，这样他在表格里插行、排序，出现次数不会跟着串位。 */
 function gullKey(seq, lead, text, face) {
-  var s = seq + '' + (face || 1) + '' + lead + '' + text;
+  var s = seq + '' + (face || 1) + '' + lead + '' + text;
   var h = 5381;
   for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
   return h.toString(36);
@@ -11592,6 +11613,7 @@ function renderFeed() {
  * 现在房间在上面单选，这里只是那个房间内部的日期，两件事不再互相影响。
  */
 function renderFiles() {
+  updateRoomBanner();
   var box = $('#files');
   clear(box);
   if (!INDEX) return;
@@ -12084,6 +12106,17 @@ function refreshRelTimes() {
 }
 setInterval(function () { if (sel.relTime) refreshRelTimes(); }, 60000);
 
+/* 频道横幅：当前房间在 ROOM_BANNER 里就显示并填文字，否则藏起来 */
+function updateRoomBanner() {
+  var b = document.getElementById('roombanner');
+  if (!b) return;
+  var txt = ROOM_BANNER[sel.room];
+  if (!txt) { b.hidden = true; return; }
+  var t = document.getElementById('rbtext');
+  if (t) t.textContent = txt;
+  b.hidden = false;
+}
+
 (function () {
   /* 把「显示偏好」几块原样搬进侧栏「显示设置」折叠区（只挪位置，不改标签/行为） */
   var body = document.getElementById('dispbody');
@@ -12106,6 +12139,14 @@ setInterval(function () { if (sel.relTime) refreshRelTimes(); }, 60000);
     lm.checked = sel.theme === 'light';
     lm.onchange = function () { sel.theme = lm.checked ? 'light' : 'dark'; savePref(); applyTheme(); };
   }
+  /* 频道横幅：收起 / 展开 */
+  var mb = document.getElementById('rbmin');
+  if (mb) mb.onclick = function () {
+    var bn = document.getElementById('roombanner');
+    var mini = bn.classList.toggle('mini');
+    mb.textContent = mini ? '+' : '—';
+    mb.setAttribute('aria-label', mini ? '展开' : '收起');
+  };
   /* ⚙ 显示设置：点标题展开 / 收起 */
   var db = document.getElementById('dispbtn'), dbody = document.getElementById('dispbody');
   if (db && dbody) {
@@ -12244,3 +12285,4 @@ boot();
 </script>
 </body>
 </html>
+
