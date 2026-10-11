@@ -43,6 +43,24 @@
     --colmax:880px;
     --colmax-compact:440px;
   }
+  /* ===== 浅色模式（默认暗色；开关在侧栏「显示设置」）===== */
+  body.light{
+    --bg:#f3f4f7; --panel:#ffffff; --panel2:#e9ecf1; --line:rgba(0,0,0,.13);
+    --tx:#14171c; --mut:#333a43; --dim:#4a515c;
+    --acc:#0e7aa8; --ok:#1f9d57; --warn:#b45309; --bad:#c62828;
+    --cbg:#2a2e38;            /* 彩色文字的深灰底：暗色粉彩在白底上才读得清 */
+  }
+  /* 普通文字（「几分钟前」、描述、正文）走 --tx/--dim = 黑/深灰，不加底；
+     彩色文字（玩家名、标签、@、产品码）保留原彩色 + 深灰底 */
+  body.light .who{background:var(--cbg);padding:0 6px;border-radius:6px}
+  body.light .tag.sup{background:var(--cbg);color:#fcd34d}
+  body.light .tag.mod{background:var(--cbg);color:#fca5a5}
+  body.light .tag.cert{background:var(--cbg);color:#7dd3fc}
+  body.light .tag.rm{background:var(--cbg);color:#c4b5fd}
+  body.light .tag.realm{color:var(--mut)}
+  body.light .mention{background:var(--cbg);color:#9bd9ff}
+  body.light .emote{background:var(--cbg)}
+  body.light .body a{color:#0e6f99}
   *{box-sizing:border-box}
   html,body{height:100%}
   body{
@@ -1270,6 +1288,7 @@
     <div id="dispbody" hidden>
       <label class="opt"><input type="checkbox" id="reltime"><span>显示相对时间（几分钟 / 几小时前）</span></label>
       <div class="note">开启后每条消息显示“多久以前”，鼠标悬停看具体时间。</div>
+      <label class="opt"><input type="checkbox" id="lightmode"><span>浅色模式（默认暗色）</span></label>
     </div>
   </div>
 
@@ -1475,7 +1494,7 @@ function supRecent() {
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = 'cfee33241199';
+var PAGE_BUILD = '87bc7084d618';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -1630,7 +1649,7 @@ function savePref() {
                        w: sel.width, mode: sel.mode, ct: sel.calcTab,
                        mask: MASK, hide: hideList(),
                        // GULL 在文件下面才赋值；万一在那之前存盘，别把开关写成 false
-                       gull: GULL ? GULL.on : true, rel: sel.relTime }));
+                       gull: GULL ? GULL.on : true, rel: sel.relTime, theme: sel.theme }));
   } catch (e) { /* 存不了就算了，不影响使用 */ }
 }
 
@@ -1649,6 +1668,9 @@ function applyWidth() {
   try {
     document.body.classList.toggle('compact', sel.width === 'compact');
   } catch (e) { /* 老浏览器 toggle 不支持第二个参数也不至于崩 */ }
+}
+function applyTheme() {
+  try { document.body.classList.toggle('light', sel.theme === 'light'); } catch (e) {}
 }
 
 var sel = {
@@ -1675,6 +1697,8 @@ var sel = {
   calcTab: (PREF.ct === 'contract' || PREF.ct === 'chain') ? PREF.ct : 'office',
   // 相对时间：默认开（PREF.rel !== false）
   relTime: PREF.rel !== false,
+  // 主题：默认暗色
+  theme: PREF.theme === 'light' ? 'light' : 'dark',
 };
 
 /**
@@ -8375,6 +8399,7 @@ function boot() {
    * 一闪一跳，看着像页面自己抖了一下。
    */
   applyWidth();
+  applyTheme();
   // 屏蔽名单也要在第一帧之前读回来 —— 晚一步的话，被屏蔽的人会先露一下脸
   maskLoad();
   hideLoad();
@@ -12075,6 +12100,11 @@ setInterval(function () { if (sel.relTime) refreshRelTimes(); }, 60000);
   if (cb) {
     cb.checked = !!sel.relTime;
     cb.onchange = function () { sel.relTime = cb.checked; savePref(); refreshRelTimes(); };
+  }
+  var lm = document.getElementById('lightmode');
+  if (lm) {
+    lm.checked = sel.theme === 'light';
+    lm.onchange = function () { sel.theme = lm.checked ? 'light' : 'dark'; savePref(); applyTheme(); };
   }
   /* ⚙ 显示设置：点标题展开 / 收起 */
   var db = document.getElementById('dispbtn'), dbody = document.getElementById('dispbody');
