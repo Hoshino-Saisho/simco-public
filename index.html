@@ -45,20 +45,20 @@
   }
   /* ===== 浅色模式（默认暗色；开关在侧栏「显示设置」）===== */
   body.light{
-    --bg:#f3f4f7; --panel:#ffffff; --panel2:#e9ecf1; --line:rgba(0,0,0,.13);
+    --bg:#f3f4f7; --panel:#ffffff; --panel2:#e1e5eb; --line:rgba(0,0,0,.13);
     --tx:#14171c; --mut:#333a43; --dim:#4a515c;
     --acc:#0e7aa8; --ok:#1f9d57; --warn:#b45309; --bad:#c62828;
-    --cbg:#2a2e38;            /* 彩色文字的深灰底：暗色粉彩在白底上才读得清 */
+    --cbg:#eef1f5;            /* 名字/标签的浅灰底：接近白，只给一点分隔 */
   }
   /* 普通文字（「几分钟前」、描述、正文）走 --tx/--dim = 黑/深灰，不加底；
      彩色文字（玩家名、标签、@、产品码）保留原彩色 + 深灰底 */
   body.light .who{background:var(--cbg);padding:0 6px;border-radius:6px}
-  body.light .tag.sup{background:var(--cbg);color:#fcd34d}
-  body.light .tag.mod{background:var(--cbg);color:#fca5a5}
-  body.light .tag.cert{background:var(--cbg);color:#7dd3fc}
-  body.light .tag.rm{background:var(--cbg);color:#c4b5fd}
+  body.light .tag.sup{background:var(--cbg);color:#8a6d0a}
+  body.light .tag.mod{background:var(--cbg);color:#a12d2d}
+  body.light .tag.cert{background:var(--cbg);color:#0b5f85}
+  body.light .tag.rm{background:var(--cbg);color:#5b3fb0}
   body.light .tag.realm{color:var(--mut)}
-  body.light .mention{background:var(--cbg);color:#9bd9ff}
+  body.light .mention{background:var(--cbg);color:#0b5f85}
   body.light .emote{background:var(--cbg)}
   body.light .body a{color:#0e6f99}
   *{box-sizing:border-box}
@@ -1494,7 +1494,7 @@ function supRecent() {
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = '87bc7084d618';
+var PAGE_BUILD = '365ee25fdb4c';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
