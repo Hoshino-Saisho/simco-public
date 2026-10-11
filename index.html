@@ -122,6 +122,11 @@
   #bar .spacer{flex:1}
   #q{max-width:300px}
   #burger{display:none;background:none;border:0;color:var(--tx);font-size:19px;cursor:pointer;padding:0 4px}
+  #setbtn{display:inline-flex;align-items:center;background:none;border:0;color:var(--tx);font-size:18px;cursor:pointer;padding:0 6px;line-height:1}
+  #setbtn:hover{color:var(--acc)}
+  #setmenu{position:fixed;right:12px;top:48px;z-index:40;width:290px;max-width:calc(100vw - 24px);max-height:76vh;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.4)}
+  #setmenu .sec{border-top:1px solid var(--line)}
+  #setmenu .sec:first-child{border-top:0}
 
   /*
    * ================= 正文列的宽度 + 右边预留的那一栏 =================
@@ -1316,6 +1321,15 @@
     <span class="sub" id="bsub"></span>
     <span class="spacer"></span>
     <input type="search" id="q" placeholder="搜索消息内容…">
+    <button id="setbtn" aria-label="设置" title="设置">☰</button>
+  </div>
+  <div id="setmenu" hidden>
+    <div class="sec">
+      <h2>时间显示</h2>
+      <label class="opt"><input type="checkbox" id="reltime"><span>显示相对时间（几分钟 / 几小时前）</span></label>
+      <div class="note">开启后每条消息显示“多久以前”，鼠标悬停看具体时间。</div>
+    </div>
+    <div id="setmoved"></div>
   </div>
   <div id="hidebar"></div>
   <div id="expbar"></div>
@@ -1456,7 +1470,7 @@ function supRecent() {
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = '6056b769f75b';
+var PAGE_BUILD = 'f7b23a7098cb';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -1611,7 +1625,7 @@ function savePref() {
                        w: sel.width, mode: sel.mode, ct: sel.calcTab,
                        mask: MASK, hide: hideList(),
                        // GULL 在文件下面才赋值；万一在那之前存盘，别把开关写成 false
-                       gull: GULL ? GULL.on : true }));
+                       gull: GULL ? GULL.on : true, rel: sel.relTime }));
   } catch (e) { /* 存不了就算了，不影响使用 */ }
 }
 
@@ -1654,6 +1668,8 @@ var sel = {
   mode: (PREF.mode === 'calc' || PREF.mode === 'news') ? PREF.mode : 'chat',
   // 计算器里面那一层：'office'（销售办公室，默认）/ 'contract'（合同，还没做）
   calcTab: (PREF.ct === 'contract' || PREF.ct === 'chain') ? PREF.ct : 'office',
+  // 相对时间：默认开（PREF.rel !== false）
+  relTime: PREF.rel !== false,
 };
 
 /**
@@ -11513,8 +11529,9 @@ function renderFeed() {
       if (m.cert) head.appendChild(el('span', 'tag cert', '证书 ' + m.cert));
       head.appendChild(el('span', 'tag realm', 'R' + m._r));
       if (isHid) head.appendChild(el('span', 'hidetag', '已隐藏'));
-      var ts = el('span', 'ts', timeOf(m.t));
+      var ts = el('span', 'ts', sel.relTime ? agoCn(m.t) : timeOf(m.t));
       ts.title = new Date(m.t).toString();
+      ts.setAttribute('data-t', m.t);
       head.appendChild(ts);
       // 一次只显示一个房间，每条都挂个一样的房间标签纯属噪音
       content.appendChild(head);
@@ -12010,6 +12027,61 @@ try {
   document.addEventListener('mouseup', function () { expDragEnd(); });
 } catch (e) {}
 $('#burger').onclick = function () { document.body.classList.toggle('nav'); };
+
+/* ===== 相对时间 + 设置菜单（☰）===== */
+function agoCn(t) {
+  var sec = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (sec < 60) return '刚刚';
+  var min = Math.floor(sec / 60);
+  if (min < 60) return min + ' 分钟前';
+  var hr = Math.floor(min / 60);
+  if (hr < 24) return hr + ' 小时前';
+  var day = Math.floor(hr / 24);
+  if (day < 30) return day + ' 天前';
+  var mon = Math.floor(day / 30);
+  if (mon < 12) return mon + ' 个月前';
+  return Math.floor(day / 365) + ' 年前';
+}
+/* 已渲染的时间戳按开关重刷（相对时间会随时间变，每分钟更新） */
+function refreshRelTimes() {
+  try {
+    var list = document.querySelectorAll('span.ts[data-t]');
+    for (var i = 0; i < list.length; i++) {
+      var t = Number(list[i].getAttribute('data-t'));
+      list[i].textContent = sel.relTime ? agoCn(t) : timeOf(t);
+    }
+  } catch (e) {}
+}
+setInterval(function () { if (sel.relTime) refreshRelTimes(); }, 60000);
+
+(function () {
+  /* 把「显示偏好」几块原样搬进设置菜单（只挪位置，不改标签/行为） */
+  var moved = document.getElementById('setmoved');
+  if (moved) {
+    var ws = document.getElementById('widthsec');
+    if (ws) moved.appendChild(ws);
+    var dim = document.getElementById('dimwrap');
+    if (dim) { var w = document.createElement('div'); w.className = 'sec'; w.appendChild(dim); moved.appendChild(w); }
+    var g = document.getElementById('gullwrap');
+    if (g && g.parentNode) moved.appendChild(g.parentNode);
+  }
+  /* 相对时间开关 */
+  var cb = document.getElementById('reltime');
+  if (cb) {
+    cb.checked = !!sel.relTime;
+    cb.onchange = function () { sel.relTime = cb.checked; savePref(); refreshRelTimes(); };
+  }
+  /* ☰ 设置按钮：开合 + 点外面关掉 */
+  var sbtn = document.getElementById('setbtn'), smenu = document.getElementById('setmenu');
+  if (sbtn && smenu) {
+    sbtn.onclick = function (e) { e.stopPropagation(); smenu.hidden = !smenu.hidden; };
+    document.addEventListener('click', function (e) {
+      if (smenu.hidden) return;
+      if (e.target === sbtn || smenu.contains(e.target)) return;
+      smenu.hidden = true;
+    });
+  }
+})();
 $('#scrim').onclick = function () { document.body.classList.remove('nav'); };
 document.addEventListener('keydown', function (e) {
   if ((e.metaKey || e.ctrlKey) && e.key === 'f') { e.preventDefault(); $('#q').focus(); }
