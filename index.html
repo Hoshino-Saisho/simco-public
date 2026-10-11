@@ -24,7 +24,7 @@
   script-src 'unsafe-inline';
   style-src 'unsafe-inline';
   connect-src 'self' https://fiatjustitia093.github.io;
-  img-src https://d1fxy698ilbz6u.cloudfront.net https://snipboard.io https://i.snipboard.io data:;
+  img-src https://d1fxy698ilbz6u.cloudfront.net https://snipboard.io https://i.snipboard.io https://landia-misc.s3-us-west-2.amazonaws.com data:;
   base-uri 'none';
   form-action 'none';
   frame-ancestors 'none';
@@ -1456,7 +1456,7 @@ function supRecent() {
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = '6a65e54f5f6b';
+var PAGE_BUILD = '6056b769f75b';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -8486,6 +8486,7 @@ function appendText(parent, text, q) {
 var IMG_HOSTS = [
   'https://snipboard.io/',
   'https://i.snipboard.io/',
+  'https://landia-misc.s3-us-west-2.amazonaws.com/',
 ];
 /*
  * 路径必须【整条】长这样：/文件名.后缀，不许有下级目录。
@@ -8497,13 +8498,17 @@ var RE_IMG_PATH = /^\/[A-Za-z0-9_\-]+\.(?:jpg|jpeg|png|gif|webp)$/i;
 /** 这个链接能不能安全地当图片显示。 */
 function imageUrl(u) {
   var s = String(u || '');
+  // snipboard 分享页 snipboard.io/X 实际是 HTML 页，真正的图在 i.snipboard.io/X
+  s = s.replace(/^https:\/\/snipboard\.io\//i, 'https://i.snipboard.io/');
   for (var i = 0; i < IMG_HOSTS.length; i++) {
     if (s.indexOf(IMG_HOSTS[i]) !== 0) continue;
     // 掐掉 ?query 和 #hash 再看路径形状 —— 带参数的一律不认
     if (s.indexOf('?') >= 0 || s.indexOf('#') >= 0) return null;
     try {
       var path = s.slice(IMG_HOSTS[i].length - 1);   // 保留开头的 /
-      if (RE_IMG_PATH.test(path)) return s;
+      // landia 的 S3 图床对象键没有后缀，单独用一条"单段无后缀"的规则
+      var re = (IMG_HOSTS[i].indexOf('amazonaws.com') >= 0) ? /^\/[A-Za-z0-9_\-]+$/ : RE_IMG_PATH;
+      if (re.test(path)) return s;
     } catch (e) { return null; }
     return null;
   }
@@ -8909,7 +8914,7 @@ function appendImages(parent, urls) {
 }
 
 function renderBody(parent, text, q, maskOnly) {
-  var parts = [{ t: 'txt', s: String(text || '') }];
+  var parts = [{ t: 'txt', s: String(text || '').replace(/\[\[\s*IMG\s*:\s*(https?:\/\/[^\]\s]+)\s*\]\]/gi, '$1') }];
   parts = splitBy(parts, /https?:\/\/[^\s<>"']+/g, 'url');
   /*
    * ⚠️ 被屏蔽的人要【先】切出来，再走通用的 @ 规则。
