@@ -1515,7 +1515,7 @@ function supRecent() {
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = '748ceb10e84a';
+var PAGE_BUILD = '344a07c113cd';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -11613,7 +11613,6 @@ function renderFeed() {
  * 现在房间在上面单选，这里只是那个房间内部的日期，两件事不再互相影响。
  */
 function renderFiles() {
-  updateRoomBanner();
   var box = $('#files');
   clear(box);
   if (!INDEX) return;
@@ -11712,7 +11711,7 @@ function renderSidebar() {
     var c = el('div', 'chip' + (sel.room === r ? ' on' : ''),
                roomLabel(r) + ' ' + rc[r].toLocaleString());
     c.title = r;                        // 悬停看得到原始的房间标识
-    c.onclick = function () { switchRoom(r); };
+    c.onclick = function () { switchRoom(r); updateRoomBanner(r); };
     rbox.appendChild(c);
   });
 
@@ -12107,18 +12106,15 @@ function refreshRelTimes() {
 setInterval(function () { if (sel.relTime) refreshRelTimes(); }, 60000);
 
 /* 频道横幅：当前房间在 ROOM_BANNER 里就显示并填文字，否则藏起来 */
-function updateRoomBanner() {
+function updateRoomBanner(room) {
   var b = document.getElementById('roombanner');
   if (!b) return;
-  var txt = ROOM_BANNER[sel.room];
-  // 只在"正在查看"时显示：当前标签页可见、且选中的是带横幅的房间
-  if (!txt || document.visibilityState === 'hidden') { b.hidden = true; return; }
+  var txt = ROOM_BANNER[room == null ? sel.room : room];
+  if (!txt) { b.hidden = true; return; }     // 其他频道（游戏/社交等）不弹
   var t = document.getElementById('rbtext');
   if (t) t.textContent = txt;
   b.hidden = false;
 }
-/* 切走标签页就藏起来，回到前台再显示 —— 只在用户查看时出现 */
-document.addEventListener('visibilitychange', updateRoomBanner);
 
 (function () {
   /* 把「显示偏好」几块原样搬进侧栏「显示设置」折叠区（只挪位置，不改标签/行为） */
