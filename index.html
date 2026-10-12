@@ -779,6 +779,7 @@
     cursor:pointer;line-height:1;padding:0 6px}
   #roombanner.mini{padding:2px 16px}
   #roombanner.mini #rbtext{display:none}
+  #roombanner[hidden]{display:none}   /* 让 hidden 生效：否则上面的 display:flex 会一直把它显示出来 */
   .placeholder{height:100%;display:flex;flex-direction:column;align-items:center;
     justify-content:center;color:var(--dim);gap:10px;text-align:center;padding:24px}
   .placeholder .big{font-size:44px;opacity:.35}
@@ -807,6 +808,17 @@
   .ts{font-size:11.5px;color:var(--dim);font-variant-numeric:tabular-nums}
   .body{white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
   .body a{color:var(--acc)}
+  /* ★ 彩色文字黑描边（不是黑底）：描边在字下层(paint-order)，不吃笔画。
+     粗细改 0.6px；只想浅色生效就给下面选择器都加 body.light 前缀。 */
+  .who,.mention,.emote,.hidetag,
+  .tag.sup,.tag.mod,.tag.cert,.tag.rm,
+  .body a,
+  .mv,.kpi .v,.mcd,.mbusy,.mexgrow,.mexv,.mtag,.mupl2.ok,
+  table.mcalc td.ok,table.mcalc td.bad,
+  .row.done{
+    -webkit-text-stroke:0.6px #000;
+    paint-order:stroke fill;
+  }
 
   .tag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:4px;vertical-align:1px;
        background:rgba(255,255,255,.09);color:var(--mut);font-weight:600;letter-spacing:.3px}
@@ -830,6 +842,7 @@
          background:rgba(255,255,255,.08);color:var(--mut);
          font-family:ui-monospace,Menlo,Consolas,monospace}
   mark{background:rgba(251,191,36,.34);color:#fff;border-radius:2px;padding:0 1px}
+  body.light mark{color:#3a2a00;background:rgba(251,191,36,.6)}
   .flags{margin-top:2px;display:flex;gap:5px;flex-wrap:wrap}
   .flag{font-size:10.5px;padding:1px 7px;border-radius:4px;background:rgba(255,255,255,.07);color:var(--dim)}
   .flag.pin{background:rgba(251,191,36,.16);color:var(--warn)}
@@ -1053,7 +1066,7 @@
     border-top:1px solid var(--line);padding:10px 16px;white-space:pre-line}
 
   .imgs{margin-top:6px;display:flex;flex-wrap:wrap;gap:8px}
-  .imgwrap{display:inline-block;line-height:0;border:1px solid var(--line);
+  .imgwrap{display:inline-block;line-height:0;border:2px solid #000;
     border-radius:8px;overflow:hidden;background:var(--panel2)}
   .imgwrap img{max-width:min(420px,100%);max-height:260px;height:auto;display:block}
   @media(max-width:860px){.imgwrap img{max-height:200px}}
@@ -1112,6 +1125,11 @@
     background:transparent;color:#e9d5ff;border:1px solid rgba(233,213,255,.45)}
   #aicard .aitoggle:hover{border-color:#e9d5ff}
   #aicard .aitoggle.on{background:rgba(233,213,255,.22);border-color:#e9d5ff}
+  /* 浅色模式：AI 卡的浅紫字在白底上会糊，改成深紫 */
+  body.light #aicard .aihead{color:#4a2b86;background:rgba(124,58,237,.14)}
+  body.light #aicard .aihead .warn{color:#6b4aa0}
+  body.light #aicard .aitoggle{color:#4a2b86;border-color:rgba(124,58,237,.5)}
+  body.light #aicard .aitoggle:hover,body.light #aicard .aitoggle.on{border-color:#7c3aed}
 
   /*
    * 进了选读的那些消息。左边一道紫条 + 很淡的底色。
@@ -1515,7 +1533,7 @@ function supRecent() {
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = '344a07c113cd';
+var PAGE_BUILD = 'e0627c22b326';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -9823,7 +9841,7 @@ function renderAiCard() {
    */
   if (Number(obj.manual)) {
     var man = el('span', null, '✍️ 素材由人工挑选');
-    man.style.color = '#86efac';
+    man.style.color = 'var(--ok)';
     foot.appendChild(man);
   }
   foot.appendChild(el('span', null,
