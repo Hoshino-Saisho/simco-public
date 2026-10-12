@@ -53,6 +53,7 @@
   /* 普通文字（「几分钟前」、描述、正文）走 --tx/--dim = 黑/深灰，不加底；
      彩色文字（玩家名、标签、@、产品码）保留原彩色 + 深灰底 */
   body.light .who{background:var(--cbg);padding:0 6px;border-radius:6px}
+  body.light .cn{background:var(--cbg);border-radius:5px;padding:0 4px}
   body.light .tag.sup{background:var(--cbg);color:#8a6d0a}
   body.light .tag.mod{background:var(--cbg);color:#a12d2d}
   body.light .tag.cert{background:var(--cbg);color:#0b5f85}
@@ -810,13 +811,13 @@
   .body a{color:var(--acc)}
   /* ★ 彩色文字黑描边（不是黑底）：描边在字下层(paint-order)，不吃笔画。
      粗细改 0.6px；只想浅色生效就给下面选择器都加 body.light 前缀。 */
-  .who,.mention,.emote,.hidetag,
+  .cn,.who,.mention,.emote,.hidetag,
   .tag.sup,.tag.mod,.tag.cert,.tag.rm,
   .body a,
   .mv,.kpi .v,.mcd,.mbusy,.mexgrow,.mexv,.mtag,.mupl2.ok,
   table.mcalc td.ok,table.mcalc td.bad,
   .row.done{
-    -webkit-text-stroke:0.6px #000;
+    -webkit-text-stroke:1px #000;
     paint-order:stroke fill;
   }
 
@@ -1533,7 +1534,7 @@ function supRecent() {
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = 'e0627c22b326';
+var PAGE_BUILD = '4d7ae0bc1139';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -8790,8 +8791,10 @@ function pcRender(m) {
   var head = el('div', 'phead');
   // 资料页永远是真的：这个功能是"录视频时别露脸"，不是"我自己也查不了"
   head.appendChild(avatar(m, true));
-  var nm = el('div', 'pname', (p && p.co) || m.name);
-  nm.style.color = colorOf(m.sid);
+  var nm = el('div', 'pname');
+  var cnm = el('span', 'cn', (p && p.co) || m.name);
+  cnm.style.color = colorOf(m.sid);
+  nm.appendChild(cnm);
   head.appendChild(nm);
   var x = el('button', 'pbtn', '✕');
   x.setAttribute('aria-label', '关闭');
@@ -9325,8 +9328,10 @@ function mkFill(box) {
   }
   list.slice(0, 200).forEach(function (v) {
     var r = el('div', 'mrow');
-    var l = el('span', 'lbl', v.name);
-    l.style.color = colorOf(v.sid);
+    var l = el('span', 'lbl');
+    var cv = el('span', 'cn', v.name);
+    cv.style.color = colorOf(v.sid);
+    l.appendChild(cv);
     r.appendChild(l);
     r.appendChild(el('span', 'n', v.n));
     r.onclick = function () { maskToggle(v.sid, v.name); };
@@ -11796,8 +11801,10 @@ function renderSidebar() {
   sbox.appendChild(all);
   list.slice(0, 300).forEach(function (e) {
     var r = el('div', 'row' + (sel.sender === e.sid ? ' on' : ''));
-    var l = el('span', 'lbl', e.name);
-    l.style.color = colorOf(e.sid);
+    var l = el('span', 'lbl');
+    var ce = el('span', 'cn', e.name);
+    ce.style.color = colorOf(e.sid);
+    l.appendChild(ce);
     r.appendChild(l); r.appendChild(el('span', 'n', e.n));
     r.onclick = function () {
       var pick = (sel.sender === e.sid) ? null : e.sid;
