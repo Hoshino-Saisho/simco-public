@@ -45,10 +45,10 @@
   }
   /* ===== 浅色模式（默认暗色；开关在侧栏「显示设置」）===== */
   body.light{
-    --bg:#f3f4f7; --panel:#ffffff; --panel2:#e1e5eb; --line:rgba(0,0,0,.13);
+    --bg:#f3f4f7; --panel:#ffffff; --panel2:#d7dce5; --line:rgba(0,0,0,.13);
     --tx:#14171c; --mut:#333a43; --dim:#4a515c;
     --acc:#0e7aa8; --ok:#1f9d57; --warn:#b45309; --bad:#c62828;
-    --cbg:#eef1f5;            /* 名字/标签的浅灰底：接近白，只给一点分隔 */
+    --cbg:#dfe4ec;            /* 名字/标签的浅灰底：清楚可见的浅灰 */
   }
   /* 普通文字（「几分钟前」、描述、正文）走 --tx/--dim = 黑/深灰，不加底；
      彩色文字（玩家名、标签、@、产品码）保留原彩色 + 深灰底 */
@@ -1515,7 +1515,7 @@ function supRecent() {
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = '66fbebe112ce';
+var PAGE_BUILD = '748ceb10e84a';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -7592,7 +7592,7 @@ function renderMapRest(box, x) {
     dr.price = n; mapSave(); renderMap();
   }, '80px'));
   pb.appendChild(el('span', 'mu',
-    ''+MAPRESTPRICEMIN+'~' + MAP_REST_PRICE_MAX + '　'));
+    '$' + MAP_REST_PRICE_MIN + '~$' + MAP_REST_PRICE_MAX + '　'));
   /*
    * ⚠️ $96 在评分和上座率里【各扣一次】 —— 超过甜点位是双重惩罚。
    *    只在一处提的话，会以为定高一点只是少点评分。
@@ -10907,7 +10907,7 @@ var GULL_FALLBACK = null;
 
 /** 行指纹：**认内容不认行号**，这样他在表格里插行、排序，出现次数不会跟着串位。 */
 function gullKey(seq, lead, text, face) {
-  var s = seq + '' + (face || 1) + '' + lead + '' + text;
+  var s = seq + '' + (face || 1) + '' + lead + '' + text;
   var h = 5381;
   for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
   return h.toString(36);
@@ -12111,11 +12111,14 @@ function updateRoomBanner() {
   var b = document.getElementById('roombanner');
   if (!b) return;
   var txt = ROOM_BANNER[sel.room];
-  if (!txt) { b.hidden = true; return; }
+  // 只在"正在查看"时显示：当前标签页可见、且选中的是带横幅的房间
+  if (!txt || document.visibilityState === 'hidden') { b.hidden = true; return; }
   var t = document.getElementById('rbtext');
   if (t) t.textContent = txt;
   b.hidden = false;
 }
+/* 切走标签页就藏起来，回到前台再显示 —— 只在用户查看时出现 */
+document.addEventListener('visibilitychange', updateRoomBanner);
 
 (function () {
   /* 把「显示偏好」几块原样搬进侧栏「显示设置」折叠区（只挪位置，不改标签/行为） */
@@ -12285,4 +12288,3 @@ boot();
 </script>
 </body>
 </html>
-
