@@ -790,7 +790,7 @@
   .daysep::before,.daysep::after{content:'';flex:1;height:1px;background:var(--line)}
   .daysep span{padding:2px 10px;border-radius:999px;border:1px solid var(--line)}
 
-  .msg{display:flex;gap:11px;padding:3px 22px}
+  .msg{display:flex;gap:11px;padding:5px 22px}
   .msg:hover{background:rgba(255,255,255,.028)}
   .msg.first{margin-top:9px}
   /* 头像本身就是正方形的图，圆形裁切会把四个角的内容切掉 —— 所以按方的显示。
@@ -799,29 +799,18 @@
       background:var(--panel2);margin-top:2px}
   .av.ph{display:flex;align-items:center;justify-content:center;font-weight:700;
          font-size:15px;color:#0e1015;letter-spacing:-.5px}
-  .gutter{width:38px;flex:0 0 38px;font-size:10.5px;color:var(--dim);text-align:right;
+  .gutter{width:38px;flex:0 0 38px;font-size:11.5px;color:var(--dim);text-align:right;
           padding-right:2px;opacity:0;line-height:1.7;font-variant-numeric:tabular-nums}
   .msg:hover .gutter{opacity:1}
   .content{min-width:0;flex:1}
   .head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:1px}
-  .who{font-weight:600;font-size:14px;cursor:pointer}
+  .who{font-weight:600;font-size:16px;cursor:pointer}
   .who:hover{text-decoration:underline}
-  .ts{font-size:11.5px;color:var(--dim);font-variant-numeric:tabular-nums}
-  .body{white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
+  .ts{font-size:12.5px;color:var(--dim);font-variant-numeric:tabular-nums}
+  .body{font-size:15px;line-height:1.72;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
   .body a{color:var(--acc)}
-  /* ★ 彩色文字黑描边（不是黑底）：描边在字下层(paint-order)，不吃笔画。
-     粗细改 0.6px；只想浅色生效就给下面选择器都加 body.light 前缀。 */
-  .cn,.who,.mention,.emote,.hidetag,
-  .tag.sup,.tag.mod,.tag.cert,.tag.rm,
-  .body a,
-  .mv,.kpi .v,.mcd,.mbusy,.mexgrow,.mexv,.mtag,.mupl2.ok,
-  table.mcalc td.ok,table.mcalc td.bad,
-  .row.done{
-    -webkit-text-stroke:1.75px #000;
-    paint-order:stroke fill;
-  }
 
-  .tag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:4px;vertical-align:1px;
+  .tag{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:4px;vertical-align:1px;
        background:rgba(255,255,255,.09);color:var(--mut);font-weight:600;letter-spacing:.3px}
   .tag.sup{background:rgba(251,191,36,.17);color:#fcd34d}
   .tag.mod{background:rgba(248,113,113,.17);color:#fca5a5}
@@ -839,7 +828,7 @@
   .opt.off{opacity:.4;cursor:default}
   .opt.off input{cursor:default}
   .mention{color:var(--acc);background:rgba(125,211,252,.12);border-radius:4px;padding:0 3px}
-  .emote{display:inline-block;font-size:11px;padding:0 5px;border-radius:4px;margin:0 1px;
+  .emote{display:inline-block;font-size:12px;padding:0 5px;border-radius:4px;margin:0 1px;
          background:rgba(255,255,255,.08);color:var(--mut);
          font-family:ui-monospace,Menlo,Consolas,monospace}
   mark{background:rgba(251,191,36,.34);color:#fff;border-radius:2px;padding:0 1px}
@@ -1534,7 +1523,7 @@ function supRecent() {
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = '63fbef064adf';
+var PAGE_BUILD = '55b2552345ec';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -8504,7 +8493,17 @@ function boot() {
 // ---------- 时间 / 颜色 ----------
 var PALETTE = ['#7dd3fc','#86efac','#fcd34d','#fca5a5','#c4b5fd','#f9a8d4',
                '#5eead4','#fdba74','#a5b4fc','#d9f99d','#f0abfc','#93c5fd'];
+// 浅色模式下的深色版（和上面一一对应、同样 12 个，保证同一人颜色一致）
+var PALETTE_LIGHT = ['#0369a1','#15803d','#b45309','#b91c1c','#6d28d9','#be185d',
+                     '#0f766e','#c2410c','#4338ca','#4d7c0f','#a21caf','#1d4ed8'];
 function colorOf(sid) { return PALETTE[Math.abs(Number(sid) || 0) % PALETTE.length]; }
+/* 名字文字色：浅色模式用深色版，暗色模式用原来的亮色 */
+function nameColor(sid) {
+  var lightOn = false;
+  try { lightOn = document.body && document.body.classList.contains('light'); } catch (e) {}
+  var p = lightOn ? PALETTE_LIGHT : PALETTE;
+  return p[Math.abs(Number(sid) || 0) % p.length];
+}
 function pad(n) { return (n < 10 ? '0' : '') + n; }
 function dayOf(t) { var d = new Date(t);
   return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
@@ -8793,7 +8792,7 @@ function pcRender(m) {
   head.appendChild(avatar(m, true));
   var nm = el('div', 'pname');
   var cnm = el('span', 'cn', (p && p.co) || m.name);
-  cnm.style.color = colorOf(m.sid);
+  cnm.style.color = nameColor(m.sid);
   nm.appendChild(cnm);
   head.appendChild(nm);
   var x = el('button', 'pbtn', '✕');
@@ -9330,7 +9329,7 @@ function mkFill(box) {
     var r = el('div', 'mrow');
     var l = el('span', 'lbl');
     var cv = el('span', 'cn', v.name);
-    cv.style.color = colorOf(v.sid);
+    cv.style.color = nameColor(v.sid);
     l.appendChild(cv);
     r.appendChild(l);
     r.appendChild(el('span', 'n', v.n));
@@ -10627,7 +10626,7 @@ function rpRender() {
        */
       var shown = (m.sid && MASK_IX[m.sid]) ? ('玩家' + MASK_IX[m.sid]) : m.name;
       var who = el('span', 'who', shown);
-      who.style.color = colorOf(m.sid);
+      who.style.color = nameColor(m.sid);
       who.style.cursor = 'default';
       h.appendChild(who);
       var ts = el('span', 'ts', hmOf(m.t));
@@ -11580,7 +11579,7 @@ function renderFeed() {
     if (!grouped) {
       var head = el('div', 'head');
       var who = el('span', 'who', maskName(m));
-      who.style.color = colorOf(m.sid);
+      who.style.color = nameColor(m.sid);
       who.title = '看看这个人';
       /*
        * 点名字 = 打开资料页。
@@ -11803,7 +11802,7 @@ function renderSidebar() {
     var r = el('div', 'row' + (sel.sender === e.sid ? ' on' : ''));
     var l = el('span', 'lbl');
     var ce = el('span', 'cn', e.name);
-    ce.style.color = colorOf(e.sid);
+    ce.style.color = nameColor(e.sid);
     l.appendChild(ce);
     r.appendChild(l); r.appendChild(el('span', 'n', e.n));
     r.onclick = function () {
@@ -12161,7 +12160,7 @@ function updateRoomBanner(room) {
   var lm = document.getElementById('lightmode');
   if (lm) {
     lm.checked = sel.theme === 'light';
-    lm.onchange = function () { sel.theme = lm.checked ? 'light' : 'dark'; savePref(); applyTheme(); };
+    lm.onchange = function () { sel.theme = lm.checked ? 'light' : 'dark'; savePref(); applyTheme(); if (INDEX) refresh(); };
   }
   /* 频道横幅：收起 / 展开 */
   var mb = document.getElementById('rbmin');
