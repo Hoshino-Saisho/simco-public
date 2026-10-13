@@ -1532,7 +1532,7 @@ function supRecent() {
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = '0163d6f4a97f';
+var PAGE_BUILD = '381ca01d69fd';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -8052,137 +8052,128 @@ function mapDoSell(out, it) {
 // ============ 建筑投资价值指数（投资指数）============
 // I = 24 / ((1 + n*(n-1)/2) * (h + c/(n*p)))
 var BVI = (function () {
-  var d = { c: 1000, h: 1, p: 5, n: 20, xvar: 'c', xmin: 100, xmax: 5000,
-            mode2d: 'line', l2x: 'n', l2min: 5, l2max: 50, l2y: 'c', l2ymin: 100, l2ymax: 5000,
-            hx: 'c', hy: 'n', hxmin: 100, hxmax: 5000, hymin: 5, hymax: 50 };
+  var d = { W0: 100, Q: 10, m: 2, P: 5, C0: 50, T0: 1, a: 5, b: 20,
+            imode: 'abs',
+            xvar: 'C0', x3min: 1, x3max: 200,
+            yvar: 'b', y3min: 2, y3max: 50,
+            mode2d: 'line', l2x: 'b', l2y: 'I', l2min: 2, l2max: 50,
+            hx: 'C0', hy: 'b', hxmin: 1, hxmax: 200, hymin: 2, hymax: 50 };
   try {
-    var raw = JSON.parse(localStorage.getItem('simco.bvi') || 'null');
+    var raw = JSON.parse(localStorage.getItem('simco.rri') || 'null');
     if (raw) for (var k in d) if (raw[k] != null && raw[k] !== '') d[k] = raw[k];
   } catch (e) {}
   return d;
 })();
 var BVI_VIEW = { yaw: -0.6, pitch: 0.6, zoom: 1 };
-function bviSave() { try { localStorage.setItem('simco.bvi', JSON.stringify(BVI)); } catch (e) {} }
-function bviCalc(c, h, p, n) {
-  c = +c; h = +h; p = +p; n = +n;
-  if (!(n > 0) || !(p > 0)) return NaN;
-  var denom = (1 + n * (n - 1) / 2) * (h + c / (n * p));
-  if (!(denom > 0)) return NaN;
-  return 24 / denom;
+function bviSave() { try { localStorage.setItem('simco.rri', JSON.stringify(BVI)); } catch (e) {} }
+
+// ===== 经济模型 =====
+// 时利 π(L) = 产量(L)·(售价-原料成本) - 工资(L)；产量(L)=Q·L；工资(L)=W0·(1+(L-1)/170)
+function bviPi(L, W0, Q, m, P) { return Q * L * (P - m) - W0 * (1 + (L - 1) / 170); }
+// 升级累计系数 S(a,b) = b(b-1)/2 - a(a-1)/2
+function bviS(a, b) { return b * (b - 1) / 2 - a * (a - 1) / 2; }
+// 回报指数：绝对=π(b)/(C总+π(b)·T总)；边际=Δπ/(C总+Δπ·T总)。越大越好。
+function bviIndexVals(o) {
+  var W0 = +o.W0, Q = +o.Q, m = +o.m, P = +o.P, C0 = +o.C0, T0 = +o.T0;
+  var a = +o.a, b = +o.b;
+  if (BVI.imode === 'abs') a = 1;
+  if (!(b > a)) return NaN;
+  var S = bviS(a, b); if (!(S > 0)) return NaN;
+  var Ctot = C0 * S, Ttot = T0 * S;
+  var piB = bviPi(b, W0, Q, m, P);
+  var num, den;
+  if (BVI.imode === 'abs') { num = piB; den = Ctot + piB * Ttot; }
+  else { num = piB - bviPi(a, W0, Q, m, P); den = Ctot + num * Ttot; }
+  if (!(num > 0) || !(den > 0)) return NaN;
+  return num / den;
 }
-var BVI_LABEL = { c: '基础成本 c', h: '基础时间 h', p: '每级每小时产出 p' };
-
-function bviRedraw() { var cv = document.getElementById('bviCanvas'); if (cv) bviDraw(cv); }
-
-function bviDraw(cv) {
-  var ctx = cv.getContext('2d');
-  var dpr = window.devicePixelRatio || 1;
-  var W = cv.width / dpr, H = cv.height / dpr;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  var cs = getComputedStyle(document.body);
-  var colTx = (cs.getPropertyValue('--tx') || '#e6e9ef').trim();
-  var colBg = (cs.getPropertyValue('--panel2') || '#1b1f2a').trim();
-  ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = colBg; ctx.fillRect(0, 0, W, H);
-
-  var NX = 40, nMin = 5, nMax = 50;
-  var xmin = +BVI.xmin, xmax = +BVI.xmax;
-  if (!(xmax > xmin)) xmax = xmin + 1;
-  function Iat(xval, n) {
-    var c = +BVI.c, h = +BVI.h, p = +BVI.p;
-    if (BVI.xvar === 'c') c = xval; else if (BVI.xvar === 'h') h = xval; else p = xval;
-    return bviCalc(c, h, p, n);
-  }
-  var grid = [], zmin = Infinity, zmax = -Infinity, i, j;
-  for (i = 0; i <= NX; i++) {
-    var xv = xmin + (xmax - xmin) * i / NX;
-    var row = [];
-    for (j = nMin; j <= nMax; j++) {
-      var z = Iat(xv, j);
-      row.push(z);
-      if (isFinite(z)) { if (z < zmin) zmin = z; if (z > zmax) zmax = z; }
-    }
-    grid.push(row);
-  }
-  if (!isFinite(zmin) || !isFinite(zmax) || zmax <= zmin) {
-    ctx.fillStyle = colTx; ctx.font = '13px sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText('这组参数算不出有效曲面（检查 p、n、X 范围是否为正）', W / 2, H / 2);
-    return;
-  }
-  var yaw = BVI_VIEW.yaw, pitch = BVI_VIEW.pitch, zoom = BVI_VIEW.zoom;
-  var cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
-  var scale = Math.min(W, H) * 0.42 * zoom, ox = W / 2, oy = H / 2 + H * 0.06;
-  function P(nx, ny, nz) {
-    var x1 = nx * cy - ny * sy, y1 = nx * sy + ny * cy, z1 = nz;
-    var z2 = y1 * sp + z1 * cp;
-    return { x: ox + x1 * scale, y: oy - z2 * scale, d: y1 * cp - z1 * sp };
-  }
-  function NXc(i) { return i / NX - 0.5; }
-  function NYc(j) { return (j - nMin) / (nMax - nMin) - 0.5; }
-  function NZc(z) { return (z - zmin) / (zmax - zmin) - 0.5; }
-  function ramp(t) {
-    var s = [[59,76,192],[58,160,214],[86,200,120],[248,210,70],[228,88,58]];
-    t = Math.max(0, Math.min(1, t));
-    var u = t * (s.length - 1), k = Math.floor(u), f = u - k;
-    if (k >= s.length - 1) { k = s.length - 2; f = 1; }
-    var a = s[k], b = s[k + 1];
-    return 'rgb(' + Math.round(a[0]+(b[0]-a[0])*f) + ',' + Math.round(a[1]+(b[1]-a[1])*f) + ',' + Math.round(a[2]+(b[2]-a[2])*f) + ')';
-  }
-  // 底面网格（定位用）
-  var g00 = P(-0.5,-0.5,-0.5), g10 = P(0.5,-0.5,-0.5), g11 = P(0.5,0.5,-0.5), g01 = P(-0.5,0.5,-0.5);
-  ctx.strokeStyle = 'rgba(128,128,128,.4)'; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(g00.x,g00.y); ctx.lineTo(g10.x,g10.y); ctx.lineTo(g11.x,g11.y); ctx.lineTo(g01.x,g01.y); ctx.closePath(); ctx.stroke();
-
-  var quads = [];
-  for (i = 0; i < NX; i++) {
-    for (j = nMin; j < nMax; j++) {
-      var a = grid[i][j-nMin], b = grid[i+1][j-nMin], c2 = grid[i+1][j+1-nMin], e = grid[i][j+1-nMin];
-      if (!isFinite(a) || !isFinite(b) || !isFinite(c2) || !isFinite(e)) continue;
-      var p0 = P(NXc(i),NYc(j),NZc(a)), p1 = P(NXc(i+1),NYc(j),NZc(b)),
-          p2 = P(NXc(i+1),NYc(j+1),NZc(c2)), p3 = P(NXc(i),NYc(j+1),NZc(e));
-      var zavg = (a+b+c2+e)/4;
-      quads.push({ q: [p0,p1,p2,p3], t: (zavg-zmin)/(zmax-zmin), d: (p0.d+p1.d+p2.d+p3.d)/4 });
-    }
-  }
-  quads.sort(function (m, n2) { return n2.d - m.d; });
-  for (i = 0; i < quads.length; i++) {
-    var Q = quads[i];
-    ctx.beginPath();
-    ctx.moveTo(Q.q[0].x,Q.q[0].y); ctx.lineTo(Q.q[1].x,Q.q[1].y);
-    ctx.lineTo(Q.q[2].x,Q.q[2].y); ctx.lineTo(Q.q[3].x,Q.q[3].y); ctx.closePath();
-    ctx.fillStyle = ramp(Q.t); ctx.fill();
-    ctx.strokeStyle = 'rgba(0,0,0,.20)'; ctx.lineWidth = 0.5; ctx.stroke();
-  }
-
-  ctx.fillStyle = colTx; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
-  var xl = P(0,-0.5,-0.5), yl = P(-0.5,0,-0.5), zl = P(-0.5,-0.5,0.5);
-  ctx.fillText('X: ' + BVI_LABEL[BVI.xvar], xl.x, xl.y + 16);
-  ctx.fillText('Y: 等级 n (5–50)', yl.x, yl.y + 16);
-  ctx.fillText('Z: 指数 I', zl.x, zl.y - 6);
-  ctx.textAlign = 'left';
-  ctx.fillText('I 范围 ' + zmin.toFixed(3) + ' ~ ' + zmax.toFixed(3), 8, 16);
-  ctx.fillText('X 范围 ' + xmin + ' ~ ' + xmax, 8, 32);
+function bviIndexOver(ax, av, bx, bv) {
+  var o = { W0: +BVI.W0, Q: +BVI.Q, m: +BVI.m, P: +BVI.P, C0: +BVI.C0, T0: +BVI.T0, a: +BVI.a, b: +BVI.b };
+  if (ax && ax !== 'I') o[ax] = av;
+  if (bx && bx !== 'I' && bx != null) o[bx] = bv;
+  return bviIndexVals(o);
+}
+var BVI_VARLBL = { W0: '基础工资', Q: '基础产能', m: '原料成本', P: '售价', C0: '升级成本基数', T0: '升级时间基数', a: '初始等级', b: '目标等级', I: '回报指数' };
+function bviDefRange(k) {
+  if (k === 'W0') return [0, 500]; if (k === 'Q') return [1, 50];
+  if (k === 'm') return [0, 10]; if (k === 'P') return [0, 20];
+  if (k === 'C0') return [1, 200]; if (k === 'T0') return [0.1, 10];
+  if (k === 'a') return [1, 40]; if (k === 'b') return [2, 50];
+  return [0, 1];
 }
 
-
-// ---- 2D 图（折线 / 热力）----
-function BVI_LBL(k){ return k==='n' ? '目标等级 n' : BVI_LABEL[k]; }
+// ===== 共用小工具 =====
 function bviFmt(v){ v=+v; if(!isFinite(v))return '—'; var a=Math.abs(v);
-  if(a>=1000)return String(Math.round(v)); if(a>=1)return String(Math.round(v*100)/100); return String(Math.round(v*1000)/1000); }
+  if(a>=1000)return String(Math.round(v)); if(a>=1)return String(Math.round(v*100)/100);
+  if(a>=0.001)return String(Math.round(v*1000)/1000); if(a===0)return '0'; return v.toExponential(1); }
+function bviNiceNum(x,round){ if(!(x>0))return 1; var e=Math.floor(Math.log(x)/Math.LN10), f=x/Math.pow(10,e), nf;
+  if(round){ nf=f<1.5?1:f<3?2:f<7?5:10; } else { nf=f<=1?1:f<=2?2:f<=5?5:10; }
+  return nf*Math.pow(10,e); }
+function bviAxisBounds(lo,hi){ if(!isFinite(lo)||!isFinite(hi))return [0,1,0.2];
+  var mag=Math.max(Math.abs(lo),Math.abs(hi));
+  if(hi-lo<=mag*1e-9){ var v=hi; lo=Math.min(0,v); hi=Math.max(0,v); if(hi<=lo)hi=lo+1; }
+  var step=bviNiceNum((hi-lo)/5,true); if(!(step>0))step=(hi-lo)/5||1;
+  return [Math.floor(lo/step)*step, Math.ceil(hi/step)*step, step]; }
 function bviRamp(t){ var s=[[59,76,192],[58,160,214],[86,200,120],[248,210,70],[228,88,58]];
   t=Math.max(0,Math.min(1,t)); var u=t*(s.length-1), k=Math.floor(u), f=u-k;
   if(k>=s.length-1){k=s.length-2;f=1;} var a=s[k], b=s[k+1];
   return 'rgb('+Math.round(a[0]+(b[0]-a[0])*f)+','+Math.round(a[1]+(b[1]-a[1])*f)+','+Math.round(a[2]+(b[2]-a[2])*f)+')'; }
-function bviDefRange(k){ if(k==='n')return [5,50]; if(k==='c')return [100,5000]; if(k==='h')return [0.5,5]; return [1,20]; }
-function bviI2(ax,av,bx,bv){
-  var c=+BVI.c,h=+BVI.h,p=+BVI.p,n=+BVI.n;
-  function set(k,v){ if(k==='c')c=v; else if(k==='h')h=v; else if(k==='p')p=v; else n=v; }
-  if(ax)set(ax,av); if(bx!=null&&bx!==undefined)set(bx,bv);
-  return bviCalc(c,h,p,n);
+
+// ===== 3D 曲面 =====
+function bviRedraw(){ var cv=document.getElementById('bviCanvas'); if(cv) bviDraw(cv); }
+function bviDraw(cv){
+  var ctx=cv.getContext('2d'); var dpr=window.devicePixelRatio||1;
+  var W=cv.width/dpr, H=cv.height/dpr; ctx.setTransform(dpr,0,0,dpr,0,0);
+  var cs=getComputedStyle(document.body);
+  var colTx=(cs.getPropertyValue('--tx')||'#e6e9ef').trim();
+  var colBg=(cs.getPropertyValue('--panel2')||'#1b1f2a').trim();
+  ctx.clearRect(0,0,W,H); ctx.fillStyle=colBg; ctx.fillRect(0,0,W,H);
+  var NX=40, NY=40;
+  var xmin=+BVI.x3min, xmax=+BVI.x3max; if(!(xmax>xmin))xmax=xmin+1;
+  var ymin=+BVI.y3min, ymax=+BVI.y3max; if(!(ymax>ymin))ymax=ymin+1;
+  var grid=[], zmin=Infinity, zmax=-Infinity, i, j;
+  for(i=0;i<=NX;i++){ var xv=xmin+(xmax-xmin)*i/NX; var row=[];
+    for(j=0;j<=NY;j++){ var yv=ymin+(ymax-ymin)*j/NY; var z=bviIndexOver(BVI.xvar,xv,BVI.yvar,yv); row.push(z);
+      if(isFinite(z)){ if(z<zmin)zmin=z; if(z>zmax)zmax=z; } }
+    grid.push(row); }
+  if(!isFinite(zmin)||!isFinite(zmax)||zmax<=zmin){
+    ctx.fillStyle=colTx; ctx.font='13px sans-serif'; ctx.textAlign='center';
+    ctx.fillText('这组参数算不出有效曲面（这块区域没有正的回报）', W/2, H/2); return; }
+  var yaw=BVI_VIEW.yaw, pitch=BVI_VIEW.pitch, zoom=BVI_VIEW.zoom;
+  var cyv=Math.cos(yaw), syv=Math.sin(yaw), cpv=Math.cos(pitch), spv=Math.sin(pitch);
+  var scale=Math.min(W,H)*0.42*zoom, ox=W/2, oy=H/2+H*0.06;
+  function PR(nx,ny,nz){ var x1=nx*cyv-ny*syv, y1=nx*syv+ny*cyv, z1=nz; var z2=y1*spv+z1*cpv;
+    return { x:ox+x1*scale, y:oy-z2*scale, d:y1*cpv-z1*spv }; }
+  function NXc(i){ return i/NX-0.5; }
+  function NYc(j){ return j/NY-0.5; }
+  function NZc(z){ return (z-zmin)/(zmax-zmin)-0.5; }
+  var g00=PR(-0.5,-0.5,-0.5), g10=PR(0.5,-0.5,-0.5), g11=PR(0.5,0.5,-0.5), g01=PR(-0.5,0.5,-0.5);
+  ctx.strokeStyle='rgba(128,128,128,.4)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(g00.x,g00.y); ctx.lineTo(g10.x,g10.y); ctx.lineTo(g11.x,g11.y); ctx.lineTo(g01.x,g01.y); ctx.closePath(); ctx.stroke();
+  var quads=[];
+  for(i=0;i<NX;i++){ for(j=0;j<NY;j++){
+    var a=grid[i][j], b=grid[i+1][j], c2=grid[i+1][j+1], e=grid[i][j+1];
+    if(!isFinite(a)||!isFinite(b)||!isFinite(c2)||!isFinite(e))continue;
+    var p0=PR(NXc(i),NYc(j),NZc(a)), p1=PR(NXc(i+1),NYc(j),NZc(b)), p2=PR(NXc(i+1),NYc(j+1),NZc(c2)), p3=PR(NXc(i),NYc(j+1),NZc(e));
+    var zavg=(a+b+c2+e)/4; quads.push({ q:[p0,p1,p2,p3], t:(zavg-zmin)/(zmax-zmin), d:(p0.d+p1.d+p2.d+p3.d)/4 }); } }
+  quads.sort(function(mm,nn){ return nn.d-mm.d; });
+  for(i=0;i<quads.length;i++){ var Qd=quads[i]; ctx.beginPath();
+    ctx.moveTo(Qd.q[0].x,Qd.q[0].y); ctx.lineTo(Qd.q[1].x,Qd.q[1].y); ctx.lineTo(Qd.q[2].x,Qd.q[2].y); ctx.lineTo(Qd.q[3].x,Qd.q[3].y); ctx.closePath();
+    ctx.fillStyle=bviRamp(Qd.t); ctx.fill(); ctx.strokeStyle='rgba(0,0,0,.20)'; ctx.lineWidth=0.5; ctx.stroke(); }
+  ctx.fillStyle=colTx; ctx.font='12px sans-serif'; ctx.textAlign='center';
+  var xl=PR(0,-0.5,-0.5), yl=PR(-0.5,0,-0.5), zl=PR(-0.5,-0.5,0.5);
+  ctx.fillText('X: '+BVI_VARLBL[BVI.xvar], xl.x, xl.y+16);
+  ctx.fillText('Y: '+BVI_VARLBL[BVI.yvar], yl.x, yl.y+16);
+  ctx.fillText('Z: '+(BVI.imode==='abs'?'绝对回报指数':'边际回报指数'), zl.x, zl.y-6);
+  ctx.textAlign='left';
+  ctx.fillText('指数 '+zmin.toPrecision(3)+' ~ '+zmax.toPrecision(3), 8, 16);
+  ctx.fillText('X '+xmin+' ~ '+xmax+'    Y '+ymin+' ~ '+ymax, 8, 32);
 }
+
+// ===== 2D 图（折线 / 热力）=====
 function bvi2dRedraw(){ var cv=document.getElementById('bvi2dCanvas'); if(cv) bvi2dDraw(cv); }
 function bvi2dDraw(cv){ if(BVI.mode2d==='heat') bviDrawHeat(cv); else bviDrawLine(cv); }
-
+function bviSweepVar(){ var kx=BVI.l2x, ky=BVI.l2y; return kx!=='I' ? kx : (ky!=='I' ? ky : 'b'); }
 function bviDrawLine(cv){
   var ctx=cv.getContext('2d'); var dpr=window.devicePixelRatio||1;
   var W=cv.width/dpr, H=cv.height/dpr; ctx.setTransform(dpr,0,0,dpr,0,0);
@@ -8191,49 +8182,39 @@ function bviDrawLine(cv){
   var colBg=(cs.getPropertyValue('--panel2')||'#1b1f2a').trim();
   var colGrid=(cs.getPropertyValue('--line')||'rgba(128,128,128,.2)').trim();
   ctx.clearRect(0,0,W,H); ctx.fillStyle=colBg; ctx.fillRect(0,0,W,H);
-  var mL=62,mR=16,mT=14,mB=42, pw=W-mL-mR, ph=H-mT-mB;
-  var kx=BVI.l2x, ky=BVI.l2y;
-  var xmin=+BVI.l2min, xmax=+BVI.l2max; if(!(xmax>xmin))xmax=xmin+1;
-  var ymin=+BVI.l2ymin, ymax=+BVI.l2ymax; if(!(ymax>ymin))ymax=ymin+1;
-  var N=160, NS=5, SCOL=['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6'];
-  var series=[], s, i, vmin=Infinity, vmax=-Infinity;
-  for(s=0;s<NS;s++){
-    var yv = NS===1 ? ymin : ymin+(ymax-ymin)*s/(NS-1);
-    var pts=[];
-    for(i=0;i<=N;i++){ var x=xmin+(xmax-xmin)*i/N, I=bviI2(kx,x,ky,yv); pts.push(I);
-      if(isFinite(I)){ if(I<vmin)vmin=I; if(I>vmax)vmax=I; } }
-    series.push({yv:yv, pts:pts});
+  var mL=64,mR=16,mT=14,mB=44, pw=W-mL-mR, ph=H-mT-mB;
+  var kx=BVI.l2x, ky=BVI.l2y, sw=bviSweepVar();
+  var smin=+BVI.l2min, smax=+BVI.l2max; if(!(smax>smin))smax=smin+1;
+  function qval(k,val,I){ return k==='I' ? I : (k===sw ? val : +BVI[k]); }
+  var N=220, i, xs=[], ys=[], xlo=Infinity,xhi=-Infinity,ylo=Infinity,yhi=-Infinity;
+  for(i=0;i<=N;i++){
+    var val=smin+(smax-smin)*i/N, I=bviIndexOver(sw,val);
+    var xv=qval(kx,val,I), yv=qval(ky,val,I); xs.push(xv); ys.push(yv);
+    if(isFinite(xv)){ if(xv<xlo)xlo=xv; if(xv>xhi)xhi=xv; }
+    if(isFinite(yv)){ if(yv<ylo)ylo=yv; if(yv>yhi)yhi=yv; }
   }
-  if(!isFinite(vmin)||!isFinite(vmax)||vmax<=vmin){ vmin=0; vmax=1; }
-  var v0=Math.min(0,vmin);
-  function X(x){ return mL+(x-xmin)/(xmax-xmin)*pw; }
-  function Y(v){ return mT+(1-(v-v0)/(vmax-v0))*ph; }
-  var gi;
+  var xb=bviAxisBounds(xlo,xhi); xlo=xb[0]; xhi=xb[1]; var xstep=xb[2];
+  var yb=bviAxisBounds(ylo,yhi); ylo=yb[0]; yhi=yb[1]; var ystep=yb[2];
+  function X(x){ return mL+(x-xlo)/(xhi-xlo)*pw; }
+  function Y(y){ return mT+(1-(y-ylo)/(yhi-ylo))*ph; }
+  var gv, gc;
   ctx.strokeStyle=colGrid; ctx.lineWidth=1; ctx.fillStyle=colTx; ctx.font='11px sans-serif';
-  for(gi=0;gi<=5;gi++){ var vv=v0+(vmax-v0)*gi/5, py=Y(vv);
+  for(gv=ylo,gc=0; gv<=yhi+ystep*0.5 && gc<=40; gv+=ystep,gc++){ var py=Y(gv);
     ctx.beginPath(); ctx.moveTo(mL,py); ctx.lineTo(W-mR,py); ctx.stroke();
-    ctx.textAlign='right'; ctx.textBaseline='middle'; ctx.fillText(bviFmt(vv),mL-6,py); }
-  for(gi=0;gi<=5;gi++){ var xx=xmin+(xmax-xmin)*gi/5, px=X(xx);
+    ctx.textAlign='right'; ctx.textBaseline='middle'; ctx.fillText(bviFmt(gv),mL-6,py); }
+  for(gv=xlo,gc=0; gv<=xhi+xstep*0.5 && gc<=40; gv+=xstep,gc++){ var px=X(gv);
     ctx.beginPath(); ctx.moveTo(px,mT); ctx.lineTo(px,H-mB); ctx.stroke();
-    ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText(bviFmt(xx),px,H-mB+6); }
-  for(s=0;s<NS;s++){
-    ctx.strokeStyle=SCOL[s%SCOL.length]; ctx.lineWidth=2; ctx.beginPath(); var on=false, pts=series[s].pts;
-    for(i=0;i<=N;i++){ var v=pts[i]; if(!isFinite(v)){ on=false; continue; } var px=X(xmin+(xmax-xmin)*i/N), py=Y(v);
-      if(!on){ ctx.moveTo(px,py); on=true; } else ctx.lineTo(px,py); }
-    ctx.stroke();
-  }
+    ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText(bviFmt(gv),px,H-mB+6); }
+  ctx.strokeStyle='#3b82f6'; ctx.lineWidth=2; ctx.beginPath(); var on=false;
+  for(i=0;i<=N;i++){ var ax=xs[i], ay=ys[i];
+    if(!isFinite(ax)||!isFinite(ay)){ on=false; continue; }
+    var px2=X(ax), py2=Y(ay); if(!on){ ctx.moveTo(px2,py2); on=true; } else ctx.lineTo(px2,py2); }
+  ctx.stroke();
   ctx.fillStyle=colTx; ctx.font='12px sans-serif';
-  ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText('X: '+BVI_LBL(kx), mL+pw/2, H-18);
+  ctx.textAlign='center'; ctx.textBaseline='bottom'; ctx.fillText('X: '+BVI_VARLBL[kx], mL+pw/2, H-4);
   ctx.save(); ctx.translate(14,mT+ph/2); ctx.rotate(-Math.PI/2);
-  ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText('竖轴: 指数 I',0,0); ctx.restore();
-  var lw2=132, lgx=W-mR-lw2, lgy=mT+8;
-  ctx.fillStyle='rgba(128,128,128,.16)'; ctx.fillRect(lgx-6,lgy-6,lw2,(NS+1)*16+6);
-  ctx.font='11px sans-serif'; ctx.textAlign='left'; ctx.textBaseline='middle';
-  ctx.fillStyle=colTx; ctx.fillText(BVI_LBL(ky)+' =', lgx, lgy+2);
-  for(s=0;s<NS;s++){ var yy=lgy+16+s*16; ctx.fillStyle=SCOL[s%SCOL.length]; ctx.fillRect(lgx,yy-4,16,8);
-    ctx.fillStyle=colTx; ctx.fillText(bviFmt(series[s].yv), lgx+22, yy); }
+  ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText('Y: '+BVI_VARLBL[ky],0,0); ctx.restore();
 }
-
 function bviDrawHeat(cv){
   var ctx=cv.getContext('2d'); var dpr=window.devicePixelRatio||1;
   var W=cv.width/dpr, H=cv.height/dpr; ctx.setTransform(dpr,0,0,dpr,0,0);
@@ -8247,7 +8228,7 @@ function bviDrawHeat(cv){
   if(!(xmax>xmin))xmax=xmin+1; if(!(ymax>ymin))ymax=ymin+1;
   var NX=64,NY=48, grid=[], imin=Infinity, imax=-Infinity, i,j;
   for(j=0;j<NY;j++){ var row=[]; var yv=ymin+(ymax-ymin)*(j+0.5)/NY;
-    for(i=0;i<NX;i++){ var xv=xmin+(xmax-xmin)*(i+0.5)/NX; var I=bviI2(kx,xv,ky,yv); row.push(I);
+    for(i=0;i<NX;i++){ var xv=xmin+(xmax-xmin)*(i+0.5)/NX; var I=bviIndexOver(kx,xv,ky,yv); row.push(I);
       if(isFinite(I)){ if(I<imin)imin=I; if(I>imax)imax=I; } } grid.push(row); }
   if(!isFinite(imin)||!isFinite(imax)||imax<=imin){ imax=imin+1; }
   var cw=pw/NX, chh=ph/NY;
@@ -8261,166 +8242,138 @@ function bviDrawHeat(cv){
   ctx.textAlign='center'; ctx.textBaseline='top';
   for(gi=0;gi<=4;gi++){ var xx=xmin+(xmax-xmin)*gi/4, px=mL+gi/4*pw; ctx.fillText(bviFmt(xx),px,H-mB+6); }
   ctx.font='12px sans-serif';
-  ctx.fillText('X: '+BVI_LBL(kx), mL+pw/2, H-18);
+  ctx.fillText('X: '+BVI_VARLBL[kx], mL+pw/2, H-18);
   ctx.save(); ctx.translate(14,mT+ph/2); ctx.rotate(-Math.PI/2);
-  ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText('Y: '+BVI_LBL(ky),0,0); ctx.restore();
+  ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText('Y: '+BVI_VARLBL[ky],0,0); ctx.restore();
   var lx=W-mR+20, lw=14, lh=ph;
   for(i=0;i<lh;i++){ ctx.fillStyle=bviRamp(1-i/lh); ctx.fillRect(lx,mT+i,lw,1); }
   ctx.strokeStyle='rgba(128,128,128,.5)'; ctx.lineWidth=1; ctx.strokeRect(lx,mT,lw,lh);
   ctx.fillStyle=colTx; ctx.font='10px sans-serif'; ctx.textAlign='left'; ctx.textBaseline='middle';
-  ctx.fillText('I '+imax.toPrecision(3), lx+lw+3, mT+6);
+  ctx.fillText(imax.toPrecision(3), lx+lw+3, mT+6);
   ctx.fillText(imin.toPrecision(3), lx+lw+3, mT+lh-6);
 }
 
 function renderBVI(box) {
-  // 卡片①：点算
+  function bviReRender(){ var w=document.querySelector('#cwrap'); while(w.firstChild)w.removeChild(w.firstChild); renderBVI(w); }
+  var V6=[['W0','工资'],['Q','产能'],['m','原料'],['P','售价'],['C0','成本基'],['T0','时间基']];
+  var V8=V6.concat([['a','初始级'],['b','目标级']]);
+  var V9=V8.concat([['I','指数']]);
+  // 卡片①：输入 + 时利/指数
   var c1 = cel('div', 'card');
-  c1.appendChild(cel('h3', null, '建筑投资价值指数'));
-  c1.appendChild(cel('div', 'sub', '公式 I = 24 / ((1 + n·(n−1)/2) · (h + c/(n·p)))。n 目标等级，c 基础成本，h 基础时间(小时)，p 每级每小时产出。四项都填，右下角得出指数 I。'));
-  var iv = cel('div', 'v'); iv.id = 'bviI';
-  function updateI() { var v = bviCalc(BVI.c, BVI.h, BVI.p, BVI.n); iv.textContent = isFinite(v) ? v.toFixed(4) : '—'; }
-  var grid = cel('div', 'fgrid');
-  function fld(label, key, affectSurface) {
-    var f = cel('div', 'fld');
-    f.appendChild(cel('label', null, label));
-    var inp = document.createElement('input');
-    inp.type = 'number'; inp.value = BVI[key];
-    inp.oninput = function () {
-      BVI[key] = inp.value === '' ? '' : parseFloat(inp.value);
-      bviSave(); updateI(); if (affectSurface) bviRedraw();
-    };
+  c1.appendChild(cel('h3', null, '建筑回报指数'));
+  c1.appendChild(cel('div', 'sub', '时利 π(L)=产量·(售价-原料成本)-工资；产量=基础产能·等级，工资=基础工资·(1+(等级-1)/170)。升级累计 S(a,b)=b(b-1)/2-a(a-1)/2，总成本=升级成本基数·S，总时间=升级时间基数·S。回报指数越大越好；算不出(没有正回报)的格子留空。'));
+  c1.appendChild(cel('div', 'bvi-sl', '指数类型：'));
+  var segm = cel('div', 'bviseg');
+  [['abs','绝对回报（从1级建到目标级）'],['marg','边际回报（初始级→目标级）']].forEach(function(o){
+    var b=cel('button', BVI.imode===o[0]?'on':null, o[1]);
+    b.onclick=function(){ BVI.imode=o[0]; bviSave(); bviReRender(); };
+    segm.appendChild(b);
+  });
+  c1.appendChild(segm);
+  var ivPi = cel('div','v'); var ivIx = cel('div','v');
+  function updateKPI(){
+    var p1 = bviPi(1, BVI.W0, BVI.Q, BVI.m, BVI.P);
+    ivPi.textContent = isFinite(p1) ? p1.toFixed(2) : '—';
+    var ix = bviIndexVals({W0:BVI.W0,Q:BVI.Q,m:BVI.m,P:BVI.P,C0:BVI.C0,T0:BVI.T0,a:BVI.a,b:BVI.b});
+    ivIx.textContent = isFinite(ix) ? ix.toPrecision(4) : '—';
+  }
+  var grid = cel('div','fgrid');
+  function fld(label, key){
+    var f=cel('div','fld'); f.appendChild(cel('label',null,label));
+    var inp=document.createElement('input'); inp.type='number'; inp.value=BVI[key];
+    inp.oninput=function(){ BVI[key]=inp.value===''?'':parseFloat(inp.value); bviSave(); updateKPI(); bviRedraw(); bvi2dRedraw(); };
     f.appendChild(inp); return f;
   }
-  grid.appendChild(fld('目标等级 n', 'n', false));
-  grid.appendChild(fld('基础成本 c', 'c', true));
-  grid.appendChild(fld('基础时间 h（小时）', 'h', true));
-  grid.appendChild(fld('每级每小时产出 p', 'p', true));
+  grid.appendChild(fld('基础工资 W0','W0'));
+  grid.appendChild(fld('基础产能 Q','Q'));
+  grid.appendChild(fld('原料成本/单位 m','m'));
+  grid.appendChild(fld('售价 P','P'));
+  grid.appendChild(fld('升级成本基数 C0','C0'));
+  grid.appendChild(fld('升级时间基数 T0','T0'));
+  grid.appendChild(fld('初始等级 a（绝对模式忽略）','a'));
+  grid.appendChild(fld('目标等级 b','b'));
   c1.appendChild(grid);
-  var k = cel('div', 'kpis');
-  var kp = cel('div', 'kpi big acc');
-  kp.appendChild(cel('div', 'k', '投资价值指数 I'));
-  kp.appendChild(iv);
-  k.appendChild(kp); c1.appendChild(k);
-  updateI();
+  var kk = cel('div','kpis');
+  var kp1 = cel('div','kpi'); kp1.appendChild(cel('div','k','一级时利 π(1)')); kp1.appendChild(ivPi);
+  var kp2 = cel('div','kpi big acc'); kp2.appendChild(cel('div','k', BVI.imode==='abs'?'绝对回报指数':'边际回报指数')); kp2.appendChild(ivIx);
+  kk.appendChild(kp1); kk.appendChild(kp2); c1.appendChild(kk);
+  updateKPI();
   box.appendChild(c1);
 
   // 卡片②：3D 曲面
-  var c2 = cel('div', 'card');
+  var c2 = cel('div','card');
   c2.appendChild(cel('h3', null, '3D 曲面'));
-  c2.appendChild(cel('div', 'sub', 'Z=指数 I，Y=目标等级 n（5–50，系统范围），X=你选的那一维；另外两维用上面填的值。拖拽旋转，滚轮缩放，双击复位。'));
-
-  var sl = cel('div', 'bvi-sl', 'X 轴（横轴）选谁：');
-  c2.appendChild(sl);
-  var seg = cel('div', 'bviseg');
-  [['c','基础成本 c'],['h','基础时间 h'],['p','每级每小时产出 p']].forEach(function (o) {
-    var b = cel('button', BVI.xvar === o[0] ? 'on' : null, o[1]);
-    b.onclick = function () {
-      BVI.xvar = o[0]; bviSave();
-      var w = document.querySelector('#cwrap'); while (w.firstChild) w.removeChild(w.firstChild); renderBVI(w);
-    };
-    seg.appendChild(b);
-  });
-  c2.appendChild(seg);
-
-  var others = ['c','h','p'].filter(function (x) { return x !== BVI.xvar; });
-  c2.appendChild(cel('div', 'sub', '当前固定：' + BVI_LABEL[others[0]] + '、' + BVI_LABEL[others[1]] + '（取上面的值）；横轴 ' + BVI_LABEL[BVI.xvar] + ' 在下面的范围内扫描。'));
-
-  var g2 = cel('div', 'fgrid');
-  function rng(label, key) {
-    var f = cel('div', 'fld'); f.appendChild(cel('label', null, label));
-    var inp = document.createElement('input'); inp.type = 'number'; inp.value = BVI[key];
-    inp.oninput = function () { BVI[key] = inp.value === '' ? '' : parseFloat(inp.value); bviSave(); bviRedraw(); };
-    f.appendChild(inp); return f;
-  }
-  g2.appendChild(rng('X 最小值', 'xmin'));
-  g2.appendChild(rng('X 最大值', 'xmax'));
+  c2.appendChild(cel('div','sub','Z=回报指数，X、Y 各选一个量（其余量用上面填的值）。拖拽旋转，滚轮缩放，双击复位。'));
+  c2.appendChild(axSel('X 轴（横轴）：', BVI.xvar, V8, function(k){ BVI.xvar=k; var r=bviDefRange(k); BVI.x3min=r[0]; BVI.x3max=r[1]; bviSave(); bviReRender(); }));
+  c2.appendChild(axSel('Y 轴（纵轴）：', BVI.yvar, V8, function(k){ BVI.yvar=k; var r=bviDefRange(k); BVI.y3min=r[0]; BVI.y3max=r[1]; bviSave(); bviReRender(); }));
+  var g2=cel('div','fgrid'); g2.style.marginTop='10px';
+  function rng(label,key){ var f=cel('div','fld'); f.appendChild(cel('label',null,label));
+    var inp=document.createElement('input'); inp.type='number'; inp.value=BVI[key];
+    inp.oninput=function(){ BVI[key]=inp.value===''?'':parseFloat(inp.value); bviSave(); bviRedraw(); };
+    f.appendChild(inp); return f; }
+  g2.appendChild(rng('X 最小值','x3min')); g2.appendChild(rng('X 最大值','x3max'));
+  g2.appendChild(rng('Y 最小值','y3min')); g2.appendChild(rng('Y 最大值','y3max'));
   c2.appendChild(g2);
-
-  var cvWrap = cel('div', 'bvicv');
-  var cv = document.createElement('canvas'); cv.id = 'bviCanvas';
+  var cvWrap=cel('div','bvicv'); var cv=document.createElement('canvas'); cv.id='bviCanvas';
   cvWrap.appendChild(cv); c2.appendChild(cvWrap);
   box.appendChild(c2);
-  // 卡片③：2D 图（折线 / 热力）
-  var c3 = cel('div', 'card');
+
+  // 卡片③：2D 图
+  var c3=cel('div','card');
   c3.appendChild(cel('h3', null, '2D 图'));
-  var seg3 = cel('div', 'bviseg');
-  [['line','折线图'],['heat','热力图']].forEach(function (o) {
-    var b = cel('button', BVI.mode2d === o[0] ? 'on' : null, o[1]);
-    b.onclick = function () { BVI.mode2d = o[0]; bviSave(); var w = document.querySelector('#cwrap'); while (w.firstChild) w.removeChild(w.firstChild); renderBVI(w); };
+  var seg3=cel('div','bviseg');
+  [['line','折线图'],['heat','热力图']].forEach(function(o){
+    var b=cel('button', BVI.mode2d===o[0]?'on':null, o[1]);
+    b.onclick=function(){ BVI.mode2d=o[0]; bviSave(); bviReRender(); };
     seg3.appendChild(b);
   });
   c3.appendChild(seg3);
-  function bviAxSel(label, cur, pick, exclude) {
-    var wrap = cel('div', null); wrap.style.marginTop = '8px';
-    wrap.appendChild(cel('div', 'bvi-sl', label));
-    var seg = cel('div', 'bviseg');
-    [['c','成本 c'],['h','时间 h'],['p','产出 p'],['n','等级 n']].forEach(function (o) {
-      if (exclude && o[0] === exclude) return;
-      var b = cel('button', cur === o[0] ? 'on' : null, o[1]);
-      b.onclick = function () { pick(o[0]); };
-      seg.appendChild(b);
-    });
-    wrap.appendChild(seg); return wrap;
+  function axSel(label, cur, opts, pick){
+    var wrap=cel('div',null); wrap.style.marginTop='8px'; wrap.appendChild(cel('div','bvi-sl',label));
+    var sg=cel('div','bviseg');
+    opts.forEach(function(o){ var b=cel('button', cur===o[0]?'on':null, o[1]); b.onclick=function(){ pick(o[0]); }; sg.appendChild(b); });
+    wrap.appendChild(sg); return wrap;
   }
-  function bviNum(label, key) {
-    var f = cel('div', 'fld'); f.appendChild(cel('label', null, label));
-    var inp = document.createElement('input'); inp.type = 'number'; inp.value = BVI[key];
-    inp.oninput = function () { BVI[key] = inp.value === '' ? '' : parseFloat(inp.value); bviSave(); bvi2dRedraw(); };
-    f.appendChild(inp); return f;
-  }
-  function bviReRender() { var w = document.querySelector('#cwrap'); while (w.firstChild) w.removeChild(w.firstChild); renderBVI(w); }
-  if (BVI.mode2d === 'line') {
-    c3.appendChild(cel('div', 'sub', 'X=横轴扫描变量，Y=分组变量（在其范围内画几条线），竖轴=指数 I，其余两个用上面填的值。'));
-    c3.appendChild(bviAxSel('X 轴（横轴）：', BVI.l2x, function (k) { BVI.l2x = k; var r = bviDefRange(k); BVI.l2min = r[0]; BVI.l2max = r[1]; bviSave(); bviReRender(); }));
-    c3.appendChild(bviAxSel('Y（分组，画多条线）：', BVI.l2y, function (k) { BVI.l2y = k; var r = bviDefRange(k); BVI.l2ymin = r[0]; BVI.l2ymax = r[1]; bviSave(); bviReRender(); }));
-    var lg = cel('div', 'fgrid'); lg.style.marginTop = '10px';
-    lg.appendChild(bviNum('X 最小值', 'l2min')); lg.appendChild(bviNum('X 最大值', 'l2max'));
-    lg.appendChild(bviNum('Y 最小值', 'l2ymin')); lg.appendChild(bviNum('Y 最大值', 'l2ymax'));
+  function bviNum(label,key){ var f=cel('div','fld'); f.appendChild(cel('label',null,label));
+    var inp=document.createElement('input'); inp.type='number'; inp.value=BVI[key];
+    inp.oninput=function(){ BVI[key]=inp.value===''?'':parseFloat(inp.value); bviSave(); bvi2dRedraw(); };
+    f.appendChild(inp); return f; }
+  if (BVI.mode2d==='line'){
+    c3.appendChild(cel('div','sub','X、Y 各选一个量（含回报指数 I）。沿「扫描量」在范围内取点，把每个点 (X,Y) 连成线；非扫描、非指数的量用上面填的值。扫描量 = X、Y 里第一个不是指数的那个。'));
+    c3.appendChild(axSel('X 轴（横轴）：', BVI.l2x, V9, function(kq){ BVI.l2x=kq; var r=bviDefRange(bviSweepVar()); BVI.l2min=r[0]; BVI.l2max=r[1]; bviSave(); bviReRender(); }));
+    c3.appendChild(axSel('Y 轴（纵轴）：', BVI.l2y, V9, function(kq){ BVI.l2y=kq; var r=bviDefRange(bviSweepVar()); BVI.l2min=r[0]; BVI.l2max=r[1]; bviSave(); bviReRender(); }));
+    c3.appendChild(cel('div','sub','当前沿「'+BVI_VARLBL[bviSweepVar()]+'」扫描取点。'));
+    var lg=cel('div','fgrid'); lg.style.marginTop='10px';
+    lg.appendChild(bviNum('扫描最小值','l2min')); lg.appendChild(bviNum('扫描最大值','l2max'));
     c3.appendChild(lg);
   } else {
-    c3.appendChild(cel('div', 'sub', 'X、Y 各选一个变量，指数 I 用颜色深浅表示（右侧有图例），另外两个用上面填的值。'));
-    c3.appendChild(bviAxSel('X 轴（横轴）：', BVI.hx, function (k) { BVI.hx = k; var r = bviDefRange(k); BVI.hxmin = r[0]; BVI.hxmax = r[1]; bviSave(); bviReRender(); }));
-    c3.appendChild(bviAxSel('Y 轴（纵轴）：', BVI.hy, function (k) { BVI.hy = k; var r = bviDefRange(k); BVI.hymin = r[0]; BVI.hymax = r[1]; bviSave(); bviReRender(); }));
-    var hg = cel('div', 'fgrid'); hg.style.marginTop = '10px';
-    hg.appendChild(bviNum('X 最小值', 'hxmin')); hg.appendChild(bviNum('X 最大值', 'hxmax'));
-    hg.appendChild(bviNum('Y 最小值', 'hymin')); hg.appendChild(bviNum('Y 最大值', 'hymax'));
+    c3.appendChild(cel('div','sub','X、Y 各选一个量，回报指数用颜色深浅表示（右侧图例），其余量用上面填的值。'));
+    c3.appendChild(axSel('X 轴（横轴）：', BVI.hx, V8, function(kq){ BVI.hx=kq; var r=bviDefRange(kq); BVI.hxmin=r[0]; BVI.hxmax=r[1]; bviSave(); bviReRender(); }));
+    c3.appendChild(axSel('Y 轴（纵轴）：', BVI.hy, V8, function(kq){ BVI.hy=kq; var r=bviDefRange(kq); BVI.hymin=r[0]; BVI.hymax=r[1]; bviSave(); bviReRender(); }));
+    var hg=cel('div','fgrid'); hg.style.marginTop='10px';
+    hg.appendChild(bviNum('X 最小值','hxmin')); hg.appendChild(bviNum('X 最大值','hxmax'));
+    hg.appendChild(bviNum('Y 最小值','hymin')); hg.appendChild(bviNum('Y 最大值','hymax'));
     c3.appendChild(hg);
   }
-  var cv2w = cel('div', 'bvicv'); cv2w.style.cursor = 'default'; cv2w.style.touchAction = 'auto';
-  var cv2 = document.createElement('canvas'); cv2.id = 'bvi2dCanvas';
-  cv2w.appendChild(cv2); c3.appendChild(cv2w);
+  var cv2w=cel('div','bvicv'); cv2w.style.cursor='default'; cv2w.style.touchAction='auto';
+  var cv2=document.createElement('canvas'); cv2.id='bvi2dCanvas'; cv2w.appendChild(cv2); c3.appendChild(cv2w);
   box.appendChild(c3);
-  function bviSize2() {
-    var w = cv2w.clientWidth || 600, h = Math.round(w * (BVI.mode2d === 'heat' ? 0.64 : 0.52));
-    var dpr = window.devicePixelRatio || 1;
-    cv2.style.width = w + 'px'; cv2.style.height = h + 'px';
-    cv2.width = Math.round(w * dpr); cv2.height = Math.round(h * dpr);
-    bvi2dDraw(cv2);
-  }
+  function bviSize2(){ var w=cv2w.clientWidth||600, h=Math.round(w*(BVI.mode2d==='heat'?0.64:0.52));
+    var dpr=window.devicePixelRatio||1; cv2.style.width=w+'px'; cv2.style.height=h+'px';
+    cv2.width=Math.round(w*dpr); cv2.height=Math.round(h*dpr); bvi2dDraw(cv2); }
   requestAnimationFrame(bviSize2);
 
-
-  function sizeCanvas() {
-    var w = cvWrap.clientWidth || 600, h = Math.round(w * 0.6);
-    var dpr = window.devicePixelRatio || 1;
-    cv.style.width = w + 'px'; cv.style.height = h + 'px';
-    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
-    bviDraw(cv);
-  }
-  var drag = null;
-  cv.onpointerdown = function (e) { drag = { x: e.clientX, y: e.clientY, yaw: BVI_VIEW.yaw, pitch: BVI_VIEW.pitch }; try { cv.setPointerCapture(e.pointerId); } catch (err) {} };
-  cv.onpointermove = function (e) {
-    if (!drag) return;
-    BVI_VIEW.yaw = drag.yaw + (e.clientX - drag.x) * 0.01;
-    BVI_VIEW.pitch = Math.max(0.05, Math.min(1.45, drag.pitch + (e.clientY - drag.y) * 0.01));
-    bviDraw(cv);
-  };
-  cv.onpointerup = function () { drag = null; };
-  cv.onpointercancel = function () { drag = null; };
-  cv.onwheel = function (e) { e.preventDefault(); BVI_VIEW.zoom = Math.max(0.4, Math.min(3, BVI_VIEW.zoom * (e.deltaY < 0 ? 1.1 : 0.9))); bviDraw(cv); };
-  cv.ondblclick = function () { BVI_VIEW.yaw = -0.6; BVI_VIEW.pitch = 0.6; BVI_VIEW.zoom = 1; bviDraw(cv); };
+  function sizeCanvas(){ var w=cvWrap.clientWidth||600, h=Math.round(w*0.6);
+    var dpr=window.devicePixelRatio||1; cv.style.width=w+'px'; cv.style.height=h+'px';
+    cv.width=Math.round(w*dpr); cv.height=Math.round(h*dpr); bviDraw(cv); }
+  var drag=null;
+  cv.onpointerdown=function(e){ drag={x:e.clientX,y:e.clientY,yaw:BVI_VIEW.yaw,pitch:BVI_VIEW.pitch}; try{cv.setPointerCapture(e.pointerId);}catch(err){} };
+  cv.onpointermove=function(e){ if(!drag)return; BVI_VIEW.yaw=drag.yaw+(e.clientX-drag.x)*0.01; BVI_VIEW.pitch=Math.max(0.05,Math.min(1.45,drag.pitch+(e.clientY-drag.y)*0.01)); bviDraw(cv); };
+  cv.onpointerup=function(){ drag=null; }; cv.onpointercancel=function(){ drag=null; };
+  cv.onwheel=function(e){ e.preventDefault(); BVI_VIEW.zoom=Math.max(0.4,Math.min(3,BVI_VIEW.zoom*(e.deltaY<0?1.1:0.9))); bviDraw(cv); };
+  cv.ondblclick=function(){ BVI_VIEW.yaw=-0.6; BVI_VIEW.pitch=0.6; BVI_VIEW.zoom=1; bviDraw(cv); };
   requestAnimationFrame(sizeCanvas);
-  if (!BVI._hooked) { window.addEventListener('resize', function () { if (sel.mode === 'calc' && sel.calcTab === 'bvi') { var c = document.getElementById('bviCanvas'); if (c) { var ww = c.parentNode.clientWidth, hh = Math.round(ww*0.6), dp = window.devicePixelRatio||1; c.style.width=ww+'px'; c.style.height=hh+'px'; c.width=Math.round(ww*dp); c.height=Math.round(hh*dp); bviDraw(c); } } }); BVI._hooked = true; }
+  if(!BVI._hooked){ window.addEventListener('resize', function(){ if(sel.mode==='calc'&&sel.calcTab==='bvi'){ var c=document.getElementById('bviCanvas'); if(c){ var ww=c.parentNode.clientWidth, hh=Math.round(ww*0.6), dp=window.devicePixelRatio||1; c.style.width=ww+'px'; c.style.height=hh+'px'; c.width=Math.round(ww*dp); c.height=Math.round(hh*dp); bviDraw(c); } } }); BVI._hooked=true; }
 }
 
 function renderCalc() {
