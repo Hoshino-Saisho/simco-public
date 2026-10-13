@@ -746,6 +746,15 @@
   .kpi.big .v{font-size:22px;font-weight:700}
   .kpi.good .v{color:var(--ok)} .kpi.bad .v{color:var(--bad)}
   .kpi.acc .v{color:var(--acc)}
+  /* ★ 投资指数子页 */
+  .bvi-sl{display:block;font-size:11px;color:var(--dim);margin:2px 0 6px}
+  .bviseg{display:inline-flex;flex-wrap:wrap;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .bviseg button{padding:6px 11px;font-size:12px;background:transparent;border:0;border-left:1px solid var(--line);color:var(--mut);cursor:pointer;font-family:inherit}
+  .bviseg button:first-child{border-left:0}
+  .bviseg button.on{background:rgba(125,211,252,.16);color:var(--acc);font-weight:600}
+  .bvicv{margin-top:12px;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--panel2);touch-action:none;cursor:grab}
+  .bvicv:active{cursor:grabbing}
+  .bvicv canvas{display:block;width:100%}
 
   /* 行尾那个删除键。做小、做灰，误点的代价是丢一行输入 */
   .xbtn{width:24px;height:24px;line-height:1;padding:0;border-radius:6px;
@@ -1523,7 +1532,7 @@ function supRecent() {
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = '55b2552345ec';
+var PAGE_BUILD = '0163d6f4a97f';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -1723,7 +1732,7 @@ var sel = {
   // 哪个模式：'chat'（聊天存档，默认）/ 'calc'（计算器）
   mode: (PREF.mode === 'calc' || PREF.mode === 'news') ? PREF.mode : 'chat',
   // 计算器里面那一层：'office'（销售办公室，默认）/ 'contract'（合同，还没做）
-  calcTab: (PREF.ct === 'contract' || PREF.ct === 'chain') ? PREF.ct : 'office',
+  calcTab: (PREF.ct === 'contract' || PREF.ct === 'chain' || PREF.ct === 'bvi') ? PREF.ct : 'office',
   // 相对时间：默认开（PREF.rel !== false）
   relTime: PREF.rel !== false,
   // 主题：默认暗色
@@ -8039,6 +8048,381 @@ function mapDoSell(out, it) {
   draw();
 }
 
+
+// ============ 建筑投资价值指数（投资指数）============
+// I = 24 / ((1 + n*(n-1)/2) * (h + c/(n*p)))
+var BVI = (function () {
+  var d = { c: 1000, h: 1, p: 5, n: 20, xvar: 'c', xmin: 100, xmax: 5000,
+            mode2d: 'line', l2x: 'n', l2min: 5, l2max: 50, l2y: 'c', l2ymin: 100, l2ymax: 5000,
+            hx: 'c', hy: 'n', hxmin: 100, hxmax: 5000, hymin: 5, hymax: 50 };
+  try {
+    var raw = JSON.parse(localStorage.getItem('simco.bvi') || 'null');
+    if (raw) for (var k in d) if (raw[k] != null && raw[k] !== '') d[k] = raw[k];
+  } catch (e) {}
+  return d;
+})();
+var BVI_VIEW = { yaw: -0.6, pitch: 0.6, zoom: 1 };
+function bviSave() { try { localStorage.setItem('simco.bvi', JSON.stringify(BVI)); } catch (e) {} }
+function bviCalc(c, h, p, n) {
+  c = +c; h = +h; p = +p; n = +n;
+  if (!(n > 0) || !(p > 0)) return NaN;
+  var denom = (1 + n * (n - 1) / 2) * (h + c / (n * p));
+  if (!(denom > 0)) return NaN;
+  return 24 / denom;
+}
+var BVI_LABEL = { c: '基础成本 c', h: '基础时间 h', p: '每级每小时产出 p' };
+
+function bviRedraw() { var cv = document.getElementById('bviCanvas'); if (cv) bviDraw(cv); }
+
+function bviDraw(cv) {
+  var ctx = cv.getContext('2d');
+  var dpr = window.devicePixelRatio || 1;
+  var W = cv.width / dpr, H = cv.height / dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  var cs = getComputedStyle(document.body);
+  var colTx = (cs.getPropertyValue('--tx') || '#e6e9ef').trim();
+  var colBg = (cs.getPropertyValue('--panel2') || '#1b1f2a').trim();
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = colBg; ctx.fillRect(0, 0, W, H);
+
+  var NX = 40, nMin = 5, nMax = 50;
+  var xmin = +BVI.xmin, xmax = +BVI.xmax;
+  if (!(xmax > xmin)) xmax = xmin + 1;
+  function Iat(xval, n) {
+    var c = +BVI.c, h = +BVI.h, p = +BVI.p;
+    if (BVI.xvar === 'c') c = xval; else if (BVI.xvar === 'h') h = xval; else p = xval;
+    return bviCalc(c, h, p, n);
+  }
+  var grid = [], zmin = Infinity, zmax = -Infinity, i, j;
+  for (i = 0; i <= NX; i++) {
+    var xv = xmin + (xmax - xmin) * i / NX;
+    var row = [];
+    for (j = nMin; j <= nMax; j++) {
+      var z = Iat(xv, j);
+      row.push(z);
+      if (isFinite(z)) { if (z < zmin) zmin = z; if (z > zmax) zmax = z; }
+    }
+    grid.push(row);
+  }
+  if (!isFinite(zmin) || !isFinite(zmax) || zmax <= zmin) {
+    ctx.fillStyle = colTx; ctx.font = '13px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('这组参数算不出有效曲面（检查 p、n、X 范围是否为正）', W / 2, H / 2);
+    return;
+  }
+  var yaw = BVI_VIEW.yaw, pitch = BVI_VIEW.pitch, zoom = BVI_VIEW.zoom;
+  var cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
+  var scale = Math.min(W, H) * 0.42 * zoom, ox = W / 2, oy = H / 2 + H * 0.06;
+  function P(nx, ny, nz) {
+    var x1 = nx * cy - ny * sy, y1 = nx * sy + ny * cy, z1 = nz;
+    var z2 = y1 * sp + z1 * cp;
+    return { x: ox + x1 * scale, y: oy - z2 * scale, d: y1 * cp - z1 * sp };
+  }
+  function NXc(i) { return i / NX - 0.5; }
+  function NYc(j) { return (j - nMin) / (nMax - nMin) - 0.5; }
+  function NZc(z) { return (z - zmin) / (zmax - zmin) - 0.5; }
+  function ramp(t) {
+    var s = [[59,76,192],[58,160,214],[86,200,120],[248,210,70],[228,88,58]];
+    t = Math.max(0, Math.min(1, t));
+    var u = t * (s.length - 1), k = Math.floor(u), f = u - k;
+    if (k >= s.length - 1) { k = s.length - 2; f = 1; }
+    var a = s[k], b = s[k + 1];
+    return 'rgb(' + Math.round(a[0]+(b[0]-a[0])*f) + ',' + Math.round(a[1]+(b[1]-a[1])*f) + ',' + Math.round(a[2]+(b[2]-a[2])*f) + ')';
+  }
+  // 底面网格（定位用）
+  var g00 = P(-0.5,-0.5,-0.5), g10 = P(0.5,-0.5,-0.5), g11 = P(0.5,0.5,-0.5), g01 = P(-0.5,0.5,-0.5);
+  ctx.strokeStyle = 'rgba(128,128,128,.4)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(g00.x,g00.y); ctx.lineTo(g10.x,g10.y); ctx.lineTo(g11.x,g11.y); ctx.lineTo(g01.x,g01.y); ctx.closePath(); ctx.stroke();
+
+  var quads = [];
+  for (i = 0; i < NX; i++) {
+    for (j = nMin; j < nMax; j++) {
+      var a = grid[i][j-nMin], b = grid[i+1][j-nMin], c2 = grid[i+1][j+1-nMin], e = grid[i][j+1-nMin];
+      if (!isFinite(a) || !isFinite(b) || !isFinite(c2) || !isFinite(e)) continue;
+      var p0 = P(NXc(i),NYc(j),NZc(a)), p1 = P(NXc(i+1),NYc(j),NZc(b)),
+          p2 = P(NXc(i+1),NYc(j+1),NZc(c2)), p3 = P(NXc(i),NYc(j+1),NZc(e));
+      var zavg = (a+b+c2+e)/4;
+      quads.push({ q: [p0,p1,p2,p3], t: (zavg-zmin)/(zmax-zmin), d: (p0.d+p1.d+p2.d+p3.d)/4 });
+    }
+  }
+  quads.sort(function (m, n2) { return n2.d - m.d; });
+  for (i = 0; i < quads.length; i++) {
+    var Q = quads[i];
+    ctx.beginPath();
+    ctx.moveTo(Q.q[0].x,Q.q[0].y); ctx.lineTo(Q.q[1].x,Q.q[1].y);
+    ctx.lineTo(Q.q[2].x,Q.q[2].y); ctx.lineTo(Q.q[3].x,Q.q[3].y); ctx.closePath();
+    ctx.fillStyle = ramp(Q.t); ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,.20)'; ctx.lineWidth = 0.5; ctx.stroke();
+  }
+
+  ctx.fillStyle = colTx; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
+  var xl = P(0,-0.5,-0.5), yl = P(-0.5,0,-0.5), zl = P(-0.5,-0.5,0.5);
+  ctx.fillText('X: ' + BVI_LABEL[BVI.xvar], xl.x, xl.y + 16);
+  ctx.fillText('Y: 等级 n (5–50)', yl.x, yl.y + 16);
+  ctx.fillText('Z: 指数 I', zl.x, zl.y - 6);
+  ctx.textAlign = 'left';
+  ctx.fillText('I 范围 ' + zmin.toFixed(3) + ' ~ ' + zmax.toFixed(3), 8, 16);
+  ctx.fillText('X 范围 ' + xmin + ' ~ ' + xmax, 8, 32);
+}
+
+
+// ---- 2D 图（折线 / 热力）----
+function BVI_LBL(k){ return k==='n' ? '目标等级 n' : BVI_LABEL[k]; }
+function bviFmt(v){ v=+v; if(!isFinite(v))return '—'; var a=Math.abs(v);
+  if(a>=1000)return String(Math.round(v)); if(a>=1)return String(Math.round(v*100)/100); return String(Math.round(v*1000)/1000); }
+function bviRamp(t){ var s=[[59,76,192],[58,160,214],[86,200,120],[248,210,70],[228,88,58]];
+  t=Math.max(0,Math.min(1,t)); var u=t*(s.length-1), k=Math.floor(u), f=u-k;
+  if(k>=s.length-1){k=s.length-2;f=1;} var a=s[k], b=s[k+1];
+  return 'rgb('+Math.round(a[0]+(b[0]-a[0])*f)+','+Math.round(a[1]+(b[1]-a[1])*f)+','+Math.round(a[2]+(b[2]-a[2])*f)+')'; }
+function bviDefRange(k){ if(k==='n')return [5,50]; if(k==='c')return [100,5000]; if(k==='h')return [0.5,5]; return [1,20]; }
+function bviI2(ax,av,bx,bv){
+  var c=+BVI.c,h=+BVI.h,p=+BVI.p,n=+BVI.n;
+  function set(k,v){ if(k==='c')c=v; else if(k==='h')h=v; else if(k==='p')p=v; else n=v; }
+  if(ax)set(ax,av); if(bx!=null&&bx!==undefined)set(bx,bv);
+  return bviCalc(c,h,p,n);
+}
+function bvi2dRedraw(){ var cv=document.getElementById('bvi2dCanvas'); if(cv) bvi2dDraw(cv); }
+function bvi2dDraw(cv){ if(BVI.mode2d==='heat') bviDrawHeat(cv); else bviDrawLine(cv); }
+
+function bviDrawLine(cv){
+  var ctx=cv.getContext('2d'); var dpr=window.devicePixelRatio||1;
+  var W=cv.width/dpr, H=cv.height/dpr; ctx.setTransform(dpr,0,0,dpr,0,0);
+  var cs=getComputedStyle(document.body);
+  var colTx=(cs.getPropertyValue('--tx')||'#e6e9ef').trim();
+  var colBg=(cs.getPropertyValue('--panel2')||'#1b1f2a').trim();
+  var colGrid=(cs.getPropertyValue('--line')||'rgba(128,128,128,.2)').trim();
+  ctx.clearRect(0,0,W,H); ctx.fillStyle=colBg; ctx.fillRect(0,0,W,H);
+  var mL=62,mR=16,mT=14,mB=42, pw=W-mL-mR, ph=H-mT-mB;
+  var kx=BVI.l2x, ky=BVI.l2y;
+  var xmin=+BVI.l2min, xmax=+BVI.l2max; if(!(xmax>xmin))xmax=xmin+1;
+  var ymin=+BVI.l2ymin, ymax=+BVI.l2ymax; if(!(ymax>ymin))ymax=ymin+1;
+  var N=160, NS=5, SCOL=['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6'];
+  var series=[], s, i, vmin=Infinity, vmax=-Infinity;
+  for(s=0;s<NS;s++){
+    var yv = NS===1 ? ymin : ymin+(ymax-ymin)*s/(NS-1);
+    var pts=[];
+    for(i=0;i<=N;i++){ var x=xmin+(xmax-xmin)*i/N, I=bviI2(kx,x,ky,yv); pts.push(I);
+      if(isFinite(I)){ if(I<vmin)vmin=I; if(I>vmax)vmax=I; } }
+    series.push({yv:yv, pts:pts});
+  }
+  if(!isFinite(vmin)||!isFinite(vmax)||vmax<=vmin){ vmin=0; vmax=1; }
+  var v0=Math.min(0,vmin);
+  function X(x){ return mL+(x-xmin)/(xmax-xmin)*pw; }
+  function Y(v){ return mT+(1-(v-v0)/(vmax-v0))*ph; }
+  var gi;
+  ctx.strokeStyle=colGrid; ctx.lineWidth=1; ctx.fillStyle=colTx; ctx.font='11px sans-serif';
+  for(gi=0;gi<=5;gi++){ var vv=v0+(vmax-v0)*gi/5, py=Y(vv);
+    ctx.beginPath(); ctx.moveTo(mL,py); ctx.lineTo(W-mR,py); ctx.stroke();
+    ctx.textAlign='right'; ctx.textBaseline='middle'; ctx.fillText(bviFmt(vv),mL-6,py); }
+  for(gi=0;gi<=5;gi++){ var xx=xmin+(xmax-xmin)*gi/5, px=X(xx);
+    ctx.beginPath(); ctx.moveTo(px,mT); ctx.lineTo(px,H-mB); ctx.stroke();
+    ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText(bviFmt(xx),px,H-mB+6); }
+  for(s=0;s<NS;s++){
+    ctx.strokeStyle=SCOL[s%SCOL.length]; ctx.lineWidth=2; ctx.beginPath(); var on=false, pts=series[s].pts;
+    for(i=0;i<=N;i++){ var v=pts[i]; if(!isFinite(v)){ on=false; continue; } var px=X(xmin+(xmax-xmin)*i/N), py=Y(v);
+      if(!on){ ctx.moveTo(px,py); on=true; } else ctx.lineTo(px,py); }
+    ctx.stroke();
+  }
+  ctx.fillStyle=colTx; ctx.font='12px sans-serif';
+  ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText('X: '+BVI_LBL(kx), mL+pw/2, H-18);
+  ctx.save(); ctx.translate(14,mT+ph/2); ctx.rotate(-Math.PI/2);
+  ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText('竖轴: 指数 I',0,0); ctx.restore();
+  var lw2=132, lgx=W-mR-lw2, lgy=mT+8;
+  ctx.fillStyle='rgba(128,128,128,.16)'; ctx.fillRect(lgx-6,lgy-6,lw2,(NS+1)*16+6);
+  ctx.font='11px sans-serif'; ctx.textAlign='left'; ctx.textBaseline='middle';
+  ctx.fillStyle=colTx; ctx.fillText(BVI_LBL(ky)+' =', lgx, lgy+2);
+  for(s=0;s<NS;s++){ var yy=lgy+16+s*16; ctx.fillStyle=SCOL[s%SCOL.length]; ctx.fillRect(lgx,yy-4,16,8);
+    ctx.fillStyle=colTx; ctx.fillText(bviFmt(series[s].yv), lgx+22, yy); }
+}
+
+function bviDrawHeat(cv){
+  var ctx=cv.getContext('2d'); var dpr=window.devicePixelRatio||1;
+  var W=cv.width/dpr, H=cv.height/dpr; ctx.setTransform(dpr,0,0,dpr,0,0);
+  var cs=getComputedStyle(document.body);
+  var colTx=(cs.getPropertyValue('--tx')||'#e6e9ef').trim();
+  var colBg=(cs.getPropertyValue('--panel2')||'#1b1f2a').trim();
+  ctx.clearRect(0,0,W,H); ctx.fillStyle=colBg; ctx.fillRect(0,0,W,H);
+  var mL=62,mR=78,mT=14,mB=42, pw=W-mL-mR, ph=H-mT-mB;
+  var kx=BVI.hx, ky=BVI.hy;
+  var xmin=+BVI.hxmin,xmax=+BVI.hxmax,ymin=+BVI.hymin,ymax=+BVI.hymax;
+  if(!(xmax>xmin))xmax=xmin+1; if(!(ymax>ymin))ymax=ymin+1;
+  var NX=64,NY=48, grid=[], imin=Infinity, imax=-Infinity, i,j;
+  for(j=0;j<NY;j++){ var row=[]; var yv=ymin+(ymax-ymin)*(j+0.5)/NY;
+    for(i=0;i<NX;i++){ var xv=xmin+(xmax-xmin)*(i+0.5)/NX; var I=bviI2(kx,xv,ky,yv); row.push(I);
+      if(isFinite(I)){ if(I<imin)imin=I; if(I>imax)imax=I; } } grid.push(row); }
+  if(!isFinite(imin)||!isFinite(imax)||imax<=imin){ imax=imin+1; }
+  var cw=pw/NX, chh=ph/NY;
+  for(j=0;j<NY;j++)for(i=0;i<NX;i++){ var v=grid[j][i]; if(!isFinite(v))continue;
+    ctx.fillStyle=bviRamp((v-imin)/(imax-imin));
+    ctx.fillRect(mL+i*cw, mT+(NY-1-j)*chh, cw+1, chh+1); }
+  var gi;
+  ctx.fillStyle=colTx; ctx.font='11px sans-serif';
+  ctx.textAlign='right'; ctx.textBaseline='middle';
+  for(gi=0;gi<=4;gi++){ var yy=ymin+(ymax-ymin)*gi/4, py=mT+(1-gi/4)*ph; ctx.fillText(bviFmt(yy),mL-6,py); }
+  ctx.textAlign='center'; ctx.textBaseline='top';
+  for(gi=0;gi<=4;gi++){ var xx=xmin+(xmax-xmin)*gi/4, px=mL+gi/4*pw; ctx.fillText(bviFmt(xx),px,H-mB+6); }
+  ctx.font='12px sans-serif';
+  ctx.fillText('X: '+BVI_LBL(kx), mL+pw/2, H-18);
+  ctx.save(); ctx.translate(14,mT+ph/2); ctx.rotate(-Math.PI/2);
+  ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText('Y: '+BVI_LBL(ky),0,0); ctx.restore();
+  var lx=W-mR+20, lw=14, lh=ph;
+  for(i=0;i<lh;i++){ ctx.fillStyle=bviRamp(1-i/lh); ctx.fillRect(lx,mT+i,lw,1); }
+  ctx.strokeStyle='rgba(128,128,128,.5)'; ctx.lineWidth=1; ctx.strokeRect(lx,mT,lw,lh);
+  ctx.fillStyle=colTx; ctx.font='10px sans-serif'; ctx.textAlign='left'; ctx.textBaseline='middle';
+  ctx.fillText('I '+imax.toPrecision(3), lx+lw+3, mT+6);
+  ctx.fillText(imin.toPrecision(3), lx+lw+3, mT+lh-6);
+}
+
+function renderBVI(box) {
+  // 卡片①：点算
+  var c1 = cel('div', 'card');
+  c1.appendChild(cel('h3', null, '建筑投资价值指数'));
+  c1.appendChild(cel('div', 'sub', '公式 I = 24 / ((1 + n·(n−1)/2) · (h + c/(n·p)))。n 目标等级，c 基础成本，h 基础时间(小时)，p 每级每小时产出。四项都填，右下角得出指数 I。'));
+  var iv = cel('div', 'v'); iv.id = 'bviI';
+  function updateI() { var v = bviCalc(BVI.c, BVI.h, BVI.p, BVI.n); iv.textContent = isFinite(v) ? v.toFixed(4) : '—'; }
+  var grid = cel('div', 'fgrid');
+  function fld(label, key, affectSurface) {
+    var f = cel('div', 'fld');
+    f.appendChild(cel('label', null, label));
+    var inp = document.createElement('input');
+    inp.type = 'number'; inp.value = BVI[key];
+    inp.oninput = function () {
+      BVI[key] = inp.value === '' ? '' : parseFloat(inp.value);
+      bviSave(); updateI(); if (affectSurface) bviRedraw();
+    };
+    f.appendChild(inp); return f;
+  }
+  grid.appendChild(fld('目标等级 n', 'n', false));
+  grid.appendChild(fld('基础成本 c', 'c', true));
+  grid.appendChild(fld('基础时间 h（小时）', 'h', true));
+  grid.appendChild(fld('每级每小时产出 p', 'p', true));
+  c1.appendChild(grid);
+  var k = cel('div', 'kpis');
+  var kp = cel('div', 'kpi big acc');
+  kp.appendChild(cel('div', 'k', '投资价值指数 I'));
+  kp.appendChild(iv);
+  k.appendChild(kp); c1.appendChild(k);
+  updateI();
+  box.appendChild(c1);
+
+  // 卡片②：3D 曲面
+  var c2 = cel('div', 'card');
+  c2.appendChild(cel('h3', null, '3D 曲面'));
+  c2.appendChild(cel('div', 'sub', 'Z=指数 I，Y=目标等级 n（5–50，系统范围），X=你选的那一维；另外两维用上面填的值。拖拽旋转，滚轮缩放，双击复位。'));
+
+  var sl = cel('div', 'bvi-sl', 'X 轴（横轴）选谁：');
+  c2.appendChild(sl);
+  var seg = cel('div', 'bviseg');
+  [['c','基础成本 c'],['h','基础时间 h'],['p','每级每小时产出 p']].forEach(function (o) {
+    var b = cel('button', BVI.xvar === o[0] ? 'on' : null, o[1]);
+    b.onclick = function () {
+      BVI.xvar = o[0]; bviSave();
+      var w = document.querySelector('#cwrap'); while (w.firstChild) w.removeChild(w.firstChild); renderBVI(w);
+    };
+    seg.appendChild(b);
+  });
+  c2.appendChild(seg);
+
+  var others = ['c','h','p'].filter(function (x) { return x !== BVI.xvar; });
+  c2.appendChild(cel('div', 'sub', '当前固定：' + BVI_LABEL[others[0]] + '、' + BVI_LABEL[others[1]] + '（取上面的值）；横轴 ' + BVI_LABEL[BVI.xvar] + ' 在下面的范围内扫描。'));
+
+  var g2 = cel('div', 'fgrid');
+  function rng(label, key) {
+    var f = cel('div', 'fld'); f.appendChild(cel('label', null, label));
+    var inp = document.createElement('input'); inp.type = 'number'; inp.value = BVI[key];
+    inp.oninput = function () { BVI[key] = inp.value === '' ? '' : parseFloat(inp.value); bviSave(); bviRedraw(); };
+    f.appendChild(inp); return f;
+  }
+  g2.appendChild(rng('X 最小值', 'xmin'));
+  g2.appendChild(rng('X 最大值', 'xmax'));
+  c2.appendChild(g2);
+
+  var cvWrap = cel('div', 'bvicv');
+  var cv = document.createElement('canvas'); cv.id = 'bviCanvas';
+  cvWrap.appendChild(cv); c2.appendChild(cvWrap);
+  box.appendChild(c2);
+  // 卡片③：2D 图（折线 / 热力）
+  var c3 = cel('div', 'card');
+  c3.appendChild(cel('h3', null, '2D 图'));
+  var seg3 = cel('div', 'bviseg');
+  [['line','折线图'],['heat','热力图']].forEach(function (o) {
+    var b = cel('button', BVI.mode2d === o[0] ? 'on' : null, o[1]);
+    b.onclick = function () { BVI.mode2d = o[0]; bviSave(); var w = document.querySelector('#cwrap'); while (w.firstChild) w.removeChild(w.firstChild); renderBVI(w); };
+    seg3.appendChild(b);
+  });
+  c3.appendChild(seg3);
+  function bviAxSel(label, cur, pick, exclude) {
+    var wrap = cel('div', null); wrap.style.marginTop = '8px';
+    wrap.appendChild(cel('div', 'bvi-sl', label));
+    var seg = cel('div', 'bviseg');
+    [['c','成本 c'],['h','时间 h'],['p','产出 p'],['n','等级 n']].forEach(function (o) {
+      if (exclude && o[0] === exclude) return;
+      var b = cel('button', cur === o[0] ? 'on' : null, o[1]);
+      b.onclick = function () { pick(o[0]); };
+      seg.appendChild(b);
+    });
+    wrap.appendChild(seg); return wrap;
+  }
+  function bviNum(label, key) {
+    var f = cel('div', 'fld'); f.appendChild(cel('label', null, label));
+    var inp = document.createElement('input'); inp.type = 'number'; inp.value = BVI[key];
+    inp.oninput = function () { BVI[key] = inp.value === '' ? '' : parseFloat(inp.value); bviSave(); bvi2dRedraw(); };
+    f.appendChild(inp); return f;
+  }
+  function bviReRender() { var w = document.querySelector('#cwrap'); while (w.firstChild) w.removeChild(w.firstChild); renderBVI(w); }
+  if (BVI.mode2d === 'line') {
+    c3.appendChild(cel('div', 'sub', 'X=横轴扫描变量，Y=分组变量（在其范围内画几条线），竖轴=指数 I，其余两个用上面填的值。'));
+    c3.appendChild(bviAxSel('X 轴（横轴）：', BVI.l2x, function (k) { BVI.l2x = k; var r = bviDefRange(k); BVI.l2min = r[0]; BVI.l2max = r[1]; bviSave(); bviReRender(); }));
+    c3.appendChild(bviAxSel('Y（分组，画多条线）：', BVI.l2y, function (k) { BVI.l2y = k; var r = bviDefRange(k); BVI.l2ymin = r[0]; BVI.l2ymax = r[1]; bviSave(); bviReRender(); }));
+    var lg = cel('div', 'fgrid'); lg.style.marginTop = '10px';
+    lg.appendChild(bviNum('X 最小值', 'l2min')); lg.appendChild(bviNum('X 最大值', 'l2max'));
+    lg.appendChild(bviNum('Y 最小值', 'l2ymin')); lg.appendChild(bviNum('Y 最大值', 'l2ymax'));
+    c3.appendChild(lg);
+  } else {
+    c3.appendChild(cel('div', 'sub', 'X、Y 各选一个变量，指数 I 用颜色深浅表示（右侧有图例），另外两个用上面填的值。'));
+    c3.appendChild(bviAxSel('X 轴（横轴）：', BVI.hx, function (k) { BVI.hx = k; var r = bviDefRange(k); BVI.hxmin = r[0]; BVI.hxmax = r[1]; bviSave(); bviReRender(); }));
+    c3.appendChild(bviAxSel('Y 轴（纵轴）：', BVI.hy, function (k) { BVI.hy = k; var r = bviDefRange(k); BVI.hymin = r[0]; BVI.hymax = r[1]; bviSave(); bviReRender(); }));
+    var hg = cel('div', 'fgrid'); hg.style.marginTop = '10px';
+    hg.appendChild(bviNum('X 最小值', 'hxmin')); hg.appendChild(bviNum('X 最大值', 'hxmax'));
+    hg.appendChild(bviNum('Y 最小值', 'hymin')); hg.appendChild(bviNum('Y 最大值', 'hymax'));
+    c3.appendChild(hg);
+  }
+  var cv2w = cel('div', 'bvicv'); cv2w.style.cursor = 'default'; cv2w.style.touchAction = 'auto';
+  var cv2 = document.createElement('canvas'); cv2.id = 'bvi2dCanvas';
+  cv2w.appendChild(cv2); c3.appendChild(cv2w);
+  box.appendChild(c3);
+  function bviSize2() {
+    var w = cv2w.clientWidth || 600, h = Math.round(w * (BVI.mode2d === 'heat' ? 0.64 : 0.52));
+    var dpr = window.devicePixelRatio || 1;
+    cv2.style.width = w + 'px'; cv2.style.height = h + 'px';
+    cv2.width = Math.round(w * dpr); cv2.height = Math.round(h * dpr);
+    bvi2dDraw(cv2);
+  }
+  requestAnimationFrame(bviSize2);
+
+
+  function sizeCanvas() {
+    var w = cvWrap.clientWidth || 600, h = Math.round(w * 0.6);
+    var dpr = window.devicePixelRatio || 1;
+    cv.style.width = w + 'px'; cv.style.height = h + 'px';
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+    bviDraw(cv);
+  }
+  var drag = null;
+  cv.onpointerdown = function (e) { drag = { x: e.clientX, y: e.clientY, yaw: BVI_VIEW.yaw, pitch: BVI_VIEW.pitch }; try { cv.setPointerCapture(e.pointerId); } catch (err) {} };
+  cv.onpointermove = function (e) {
+    if (!drag) return;
+    BVI_VIEW.yaw = drag.yaw + (e.clientX - drag.x) * 0.01;
+    BVI_VIEW.pitch = Math.max(0.05, Math.min(1.45, drag.pitch + (e.clientY - drag.y) * 0.01));
+    bviDraw(cv);
+  };
+  cv.onpointerup = function () { drag = null; };
+  cv.onpointercancel = function () { drag = null; };
+  cv.onwheel = function (e) { e.preventDefault(); BVI_VIEW.zoom = Math.max(0.4, Math.min(3, BVI_VIEW.zoom * (e.deltaY < 0 ? 1.1 : 0.9))); bviDraw(cv); };
+  cv.ondblclick = function () { BVI_VIEW.yaw = -0.6; BVI_VIEW.pitch = 0.6; BVI_VIEW.zoom = 1; bviDraw(cv); };
+  requestAnimationFrame(sizeCanvas);
+  if (!BVI._hooked) { window.addEventListener('resize', function () { if (sel.mode === 'calc' && sel.calcTab === 'bvi') { var c = document.getElementById('bviCanvas'); if (c) { var ww = c.parentNode.clientWidth, hh = Math.round(ww*0.6), dp = window.devicePixelRatio||1; c.style.width=ww+'px'; c.style.height=hh+'px'; c.width=Math.round(ww*dp); c.height=Math.round(hh*dp); bviDraw(c); } } }); BVI._hooked = true; }
+}
+
 function renderCalc() {
   renderCalcTabs();
   var box = document.querySelector('#cwrap');
@@ -8053,6 +8437,7 @@ function renderCalc() {
     return;
   }
   if (sel.calcTab === 'chain') { renderChain(box); return; }
+  if (sel.calcTab === 'bvi') { renderBVI(box); return; }
 
   var R = calcContract(CALC);
   var B = calcBudget(CALC);
@@ -8345,7 +8730,7 @@ function setMode(m) {
 }
 
 function setCalcTab(t) {
-  sel.calcTab = (t === 'contract' || t === 'chain') ? t : 'office';
+  sel.calcTab = (t === 'contract' || t === 'chain' || t === 'bvi') ? t : 'office';
   savePref();
   renderCalc();
 }
@@ -8369,7 +8754,7 @@ function renderCalcTabs() {
   var box = document.querySelector('#calctabs');
   if (!box) return;
   while (box.firstChild) box.removeChild(box.firstChild);
-  [['office', '销售办公室'], ['chain', '一条龙'], ['contract', '合同']].forEach(function (p) {
+  [['office', '销售办公室'], ['chain', '一条龙'], ['contract', '合同'], ['bvi', '投资指数']].forEach(function (p) {
     var b = cel('button', sel.calcTab === p[0] ? 'on' : null, p[1]);
     b.onclick = function () { setCalcTab(p[0]); };
     box.appendChild(b);
