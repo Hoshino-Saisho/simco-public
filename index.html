@@ -1175,6 +1175,8 @@
     #bar .sub,#bar .title{display:none}
     .modetabs{flex:0 0 auto}
     .modetabs button{padding:4px 7px;font-size:11px}
+    #calc #bar{flex-wrap:wrap}
+    #calc #bar #calctabs{order:3;flex-basis:100%;margin-top:2px}
     .msg{padding-left:12px;padding-right:12px}
     .daysep{margin-left:12px;margin-right:12px}
   }
@@ -1532,7 +1534,7 @@ function supRecent() {
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = 'e6ce5da09a5e';
+var PAGE_BUILD = '16ed907bb93b';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -8124,7 +8126,7 @@ function bviIndexOver(ax, av, bx, bv) {
   if (bx && bx !== 'I' && bx != null) o[bx] = bv;
   return bviIndexVals(o);
 }
-var BVI_VARLBL = { W0: '基础工资', Q: '基础产能', m: '原料成本', P: '售价', C0: '升级成本基数', T0: '升级时间基数', a: '初始等级', b: '目标等级', E: '其他建筑等级', I: '回报指数' };
+var BVI_VARLBL = { W0: '基础工资', Q: '基础产能', m: '原料成本', P: '售价', C0: '升级成本基数', T0: '升级时间基数', a: '初始等级', b: '目标等级', E: '其他建筑等级', I: '等利' };
 function bviMetricName(){ var n={abs:'绝对回报指数',marg:'边际回报指数',deng:'等利',sc1:'综合降低率C1',sc2:'综合降低率C2'}; return n[BVI.imode]||'等利'; }
 function bviVLbl(k){ return k==='I' ? bviMetricName() : BVI_VARLBL[k]; }
 function bviDefRange(k) {
@@ -8290,11 +8292,11 @@ function renderBVI(box) {
   function bviReRender(){ var w=document.querySelector('#cwrap'); while(w.firstChild)w.removeChild(w.firstChild); renderBVI(w); }
   var V6=[['W0','工资'],['Q','产能'],['m','原料'],['P','售价'],['C0','成本基'],['T0','时间基']];
   var V8=V6.concat([['a','初始级'],['b','目标级']]);
-  var V9=V8.concat([['I','指数']]);
+  var V9=V8.concat([['I','等利']]);
   // 卡片①：输入 + 时利/指数
   var c1 = cel('div', 'card');
-  c1.appendChild(cel('h3', null, '建筑回报指数'));
-  c1.appendChild(cel('div', 'sub', '时利 π(L)=产量·(售价-原料成本)-工资；产量=基础产能·等级，工资=基础工资·等级·(1+(等级-1+E)/170)（E=其他建筑等级，仅进管理费）。升级累计 S(a,b)=b(b-1)/2-a(a-1)/2，总成本=升级成本基数·S，总时间=升级时间基数·S。回报指数越大越好；算不出(没有正回报)的格子留空。'));
+  c1.appendChild(cel('h3', null, '建筑等利'));
+  c1.appendChild(cel('div', 'sub', '时利 π(L)=产量·(售价-原料成本)-工资；产量=基础产能·等级，工资=基础工资·等级·(1+(等级-1+E)/170)（E=其他建筑等级，仅进管理费）。升级累计 S(a,b)=b(b-1)/2-a(a-1)/2，总成本=升级成本基数·S，总时间=升级时间基数·S。等利越大越好（综合降低率则越小越平衡）；算不出(没有正回报)的格子留空。'));
   c1.appendChild(cel('div', 'bvi-sl', '指数类型：'));
   var segm = cel('div', 'bviseg');
   [['deng','等利（利润提升÷(管理费提升+每小时升级成本)）'],['sc1','综合降低率C1（平均相对降低率）'],['sc2','综合降低率C2（几何衰减率）']].forEach(function(o){
@@ -8345,7 +8347,7 @@ function renderBVI(box) {
   // 卡片②：3D 曲面
   var c2 = cel('div','card');
   c2.appendChild(cel('h3', null, '3D 曲面'));
-  c2.appendChild(cel('div','sub','Z=回报指数，X、Y 各选一个量（其余量用上面填的值）。拖拽旋转，滚轮缩放，双击复位。'));
+  c2.appendChild(cel('div','sub','Z=等利，X、Y 各选一个量（其余量用上面填的值）。拖拽旋转，滚轮缩放，双击复位。'));
   c2.appendChild(axSel('X 轴（横轴）：', BVI.xvar, V8, function(k){ BVI.xvar=k; var r=bviDefRange(k); BVI.x3min=r[0]; BVI.x3max=r[1]; bviSave(); bviReRender(); }));
   c2.appendChild(axSel('Y 轴（纵轴）：', BVI.yvar, V8, function(k){ BVI.yvar=k; var r=bviDefRange(k); BVI.y3min=r[0]; BVI.y3max=r[1]; bviSave(); bviReRender(); }));
   var g2=cel('div','fgrid'); g2.style.marginTop='10px';
@@ -8381,7 +8383,7 @@ function renderBVI(box) {
     inp.oninput=function(){ BVI[key]=inp.value===''?'':parseFloat(inp.value); bviSave(); bvi2dRedraw(); };
     f.appendChild(inp); return f; }
   if (BVI.mode2d==='line'){
-    c3.appendChild(cel('div','sub','X、Y 各选一个量（含回报指数 I）。沿「扫描量」在范围内取点，把每个点 (X,Y) 连成线；非扫描、非指数的量用上面填的值。扫描量 = X、Y 里第一个不是指数的那个。'));
+    c3.appendChild(cel('div','sub','X、Y 各选一个量（含等利 I）。沿「扫描量」在范围内取点，把每个点 (X,Y) 连成线；非扫描、非等利的量用上面填的值。扫描量 = X、Y 里第一个不是等利的那个。'));
     c3.appendChild(axSel('X 轴（横轴）：', BVI.l2x, V9, function(kq){ BVI.l2x=kq; var r=bviDefRange(bviSweepVar()); BVI.l2min=r[0]; BVI.l2max=r[1]; bviSave(); bviReRender(); }));
     c3.appendChild(axSel('Y 轴（纵轴）：', BVI.l2y, V9, function(kq){ BVI.l2y=kq; var r=bviDefRange(bviSweepVar()); BVI.l2min=r[0]; BVI.l2max=r[1]; bviSave(); bviReRender(); }));
     c3.appendChild(cel('div','sub','当前沿「'+BVI_VARLBL[bviSweepVar()]+'」扫描取点。'));
@@ -8389,7 +8391,7 @@ function renderBVI(box) {
     lg.appendChild(bviNum('扫描最小值','l2min')); lg.appendChild(bviNum('扫描最大值','l2max'));
     c3.appendChild(lg);
   } else {
-    c3.appendChild(cel('div','sub','X、Y 各选一个量，回报指数用颜色深浅表示（右侧图例），其余量用上面填的值。'));
+    c3.appendChild(cel('div','sub','X、Y 各选一个量，等利用颜色深浅表示（右侧图例），其余量用上面填的值。'));
     c3.appendChild(axSel('X 轴（横轴）：', BVI.hx, V8, function(kq){ BVI.hx=kq; var r=bviDefRange(kq); BVI.hxmin=r[0]; BVI.hxmax=r[1]; bviSave(); bviReRender(); }));
     c3.appendChild(axSel('Y 轴（纵轴）：', BVI.hy, V8, function(kq){ BVI.hy=kq; var r=bviDefRange(kq); BVI.hymin=r[0]; BVI.hymax=r[1]; bviSave(); bviReRender(); }));
     var hg=cel('div','fgrid'); hg.style.marginTop='10px';
@@ -8749,7 +8751,7 @@ function renderCalcTabs() {
   var box = document.querySelector('#calctabs');
   if (!box) return;
   while (box.firstChild) box.removeChild(box.firstChild);
-  [['office', '销售办公室'], ['chain', '一条龙'], ['contract', '合同'], ['bvi', '投资指数']].forEach(function (p) {
+  [['office', '销售办公室'], ['chain', '一条龙'], ['contract', '合同'], ['bvi', '等利计算']].forEach(function (p) {
     var b = cel('button', sel.calcTab === p[0] ? 'on' : null, p[1]);
     b.onclick = function () { setCalcTab(p[0]); };
     box.appendChild(b);
