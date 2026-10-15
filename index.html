@@ -1532,7 +1532,7 @@ function supRecent() {
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = '381ca01d69fd';
+var PAGE_BUILD = 'e6ce5da09a5e';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
@@ -8052,8 +8052,8 @@ function mapDoSell(out, it) {
 // ============ 建筑投资价值指数（投资指数）============
 // I = 24 / ((1 + n*(n-1)/2) * (h + c/(n*p)))
 var BVI = (function () {
-  var d = { W0: 100, Q: 10, m: 2, P: 5, C0: 50, T0: 1, a: 5, b: 20,
-            imode: 'abs',
+  var d = { W0: 20, Q: 10, m: 2, P: 5, C0: 50, T0: 1, a: 5, b: 20, E: 0,
+            imode: 'deng',
             xvar: 'C0', x3min: 1, x3max: 200,
             yvar: 'b', y3min: 2, y3max: 50,
             mode2d: 'line', l2x: 'b', l2y: 'I', l2min: 2, l2max: 50,
@@ -8062,38 +8062,71 @@ var BVI = (function () {
     var raw = JSON.parse(localStorage.getItem('simco.rri') || 'null');
     if (raw) for (var k in d) if (raw[k] != null && raw[k] !== '') d[k] = raw[k];
   } catch (e) {}
+  if (['deng','sc1','sc2'].indexOf(d.imode) < 0) d.imode = 'deng';
   return d;
 })();
 var BVI_VIEW = { yaw: -0.6, pitch: 0.6, zoom: 1 };
 function bviSave() { try { localStorage.setItem('simco.rri', JSON.stringify(BVI)); } catch (e) {} }
 
 // ===== 经济模型 =====
-// 时利 π(L) = 产量(L)·(售价-原料成本) - 工资(L)；产量(L)=Q·L；工资(L)=W0·(1+(L-1)/170)
-function bviPi(L, W0, Q, m, P) { return Q * L * (P - m) - W0 * (1 + (L - 1) / 170); }
+// 时利 π(L) = 产量(L)·(售价-原料成本) - 工资(L)；产量(L)=Q·L；工资(L)=W0·L·(1+(L-1+E)/170)，E=其他建筑等级，仅进管理费
+function bviPi(L, W0, Q, m, P, E) { E = +E || 0; return Q * L * (P - m) - W0 * L * (1 + (L - 1 + E) / 170); }
 // 升级累计系数 S(a,b) = b(b-1)/2 - a(a-1)/2
 function bviS(a, b) { return b * (b - 1) / 2 - a * (a - 1) / 2; }
-// 回报指数：绝对=π(b)/(C总+π(b)·T总)；边际=Δπ/(C总+Δπ·T总)。越大越好。
+// 回报指数：绝对=π(b)/(C总+π(b)·T总)；边际=Δπ/(C总+Δπ·T总)；等利=Δπ/(Δ管理费+C总/T总)；综合降低率sc1/sc2=单级等利逐级降低率的综合，越小越平衡。
 function bviIndexVals(o) {
   var W0 = +o.W0, Q = +o.Q, m = +o.m, P = +o.P, C0 = +o.C0, T0 = +o.T0;
-  var a = +o.a, b = +o.b;
+  var a = +o.a, b = +o.b, E = +o.E || 0;
   if (BVI.imode === 'abs') a = 1;
+  if (BVI.imode === 'sc1' || BVI.imode === 'sc2') return bviDeclineScore(W0, Q, m, P, C0, T0, E, a, b, BVI.imode);
   if (!(b > a)) return NaN;
   var S = bviS(a, b); if (!(S > 0)) return NaN;
-  var Ctot = C0 * S, Ttot = T0 * S;
-  var piB = bviPi(b, W0, Q, m, P);
-  var num, den;
-  if (BVI.imode === 'abs') { num = piB; den = Ctot + piB * Ttot; }
-  else { num = piB - bviPi(a, W0, Q, m, P); den = Ctot + num * Ttot; }
-  if (!(num > 0) || !(den > 0)) return NaN;
-  return num / den;
+  var piB = bviPi(b, W0, Q, m, P, E);
+  if (BVI.imode === 'deng') {
+    var dprofit = piB - bviPi(a, W0, Q, m, P, E);
+    var dmgmt = W0 * (b * (b + E - 1) - a * (a + E - 1)) / 170;
+    var Tup = T0 * S; if (!(Tup > 0)) return NaN;
+    var denG = dmgmt + C0 * S / Tup;
+    if (!(denG > 0) || !isFinite(dprofit)) return NaN;
+    return dprofit / denG;
+  }
+  // —— 旧版指数：绝对回报 / 边际回报（已从界面移除，保留公式备用）——
+  // 公共： S = bviS(a,b) = b(b-1)/2 - a(a-1)/2 ；C总 = C0·S ；T总 = T0·S
+  // 绝对回报指数 = π(b) / (C总 + π(b)·T总)   （a 固定为 1，见上方 if(imode==='abs') a=1）
+  // 边际回报指数 = Δπ  / (C总 + Δπ·T总)      （Δπ = π(b) − π(a)，从初始级 a 到目标级 b）
+  // 恢复方法：模式按钮里加回 ['abs',...]/['marg',...]，归一化白名单补回 'abs','marg'，并解开下面：
+  //   var Ctot = C0 * S, Ttot = T0 * S, num, den;
+  //   if (BVI.imode === 'abs') { num = piB; den = Ctot + piB * Ttot; }
+  //   else { num = piB - bviPi(a, W0, Q, m, P, E); den = Ctot + num * Ttot; }
+  //   if (!(num > 0) || !(den > 0)) return NaN;
+  //   return num / den;
+  return NaN;
+}
+function bviDeclineScore(W0, Q, m, P, C0, T0, E, a, b, mode) {
+  W0 = +W0; Q = +Q; m = +m; P = +P; C0 = +C0; T0 = +T0; E = +E || 0; a = +a; b = +b;
+  if (!(b > a) || !(T0 > 0)) return NaN;
+  var d = [], L;
+  for (L = a; L < b; L++) {
+    var dp = bviPi(L + 1, W0, Q, m, P, E) - bviPi(L, W0, Q, m, P, E);
+    var dm = W0 * ((L + 1) * (L + 1 + E - 1) - L * (L + E - 1)) / 170;
+    var dd = dp / (dm + C0 / T0);
+    if (!(dd > 0)) break;
+    d.push(dd);
+  }
+  if (d.length < 2) return NaN;
+  var i, s;
+  if (mode === 'sc1') { s = 0; for (i = 0; i < d.length - 1; i++) s += (d[i] - d[i + 1]) / d[i]; return s / (d.length - 1); }
+  return 1 - Math.pow(d[d.length - 1] / d[0], 1 / (d.length - 1));
 }
 function bviIndexOver(ax, av, bx, bv) {
-  var o = { W0: +BVI.W0, Q: +BVI.Q, m: +BVI.m, P: +BVI.P, C0: +BVI.C0, T0: +BVI.T0, a: +BVI.a, b: +BVI.b };
+  var o = { W0: +BVI.W0, Q: +BVI.Q, m: +BVI.m, P: +BVI.P, C0: +BVI.C0, T0: +BVI.T0, a: +BVI.a, b: +BVI.b, E: +BVI.E };
   if (ax && ax !== 'I') o[ax] = av;
   if (bx && bx !== 'I' && bx != null) o[bx] = bv;
   return bviIndexVals(o);
 }
-var BVI_VARLBL = { W0: '基础工资', Q: '基础产能', m: '原料成本', P: '售价', C0: '升级成本基数', T0: '升级时间基数', a: '初始等级', b: '目标等级', I: '回报指数' };
+var BVI_VARLBL = { W0: '基础工资', Q: '基础产能', m: '原料成本', P: '售价', C0: '升级成本基数', T0: '升级时间基数', a: '初始等级', b: '目标等级', E: '其他建筑等级', I: '回报指数' };
+function bviMetricName(){ var n={abs:'绝对回报指数',marg:'边际回报指数',deng:'等利',sc1:'综合降低率C1',sc2:'综合降低率C2'}; return n[BVI.imode]||'等利'; }
+function bviVLbl(k){ return k==='I' ? bviMetricName() : BVI_VARLBL[k]; }
 function bviDefRange(k) {
   if (k === 'W0') return [0, 500]; if (k === 'Q') return [1, 50];
   if (k === 'm') return [0, 10]; if (k === 'P') return [0, 20];
@@ -8164,7 +8197,7 @@ function bviDraw(cv){
   var xl=PR(0,-0.5,-0.5), yl=PR(-0.5,0,-0.5), zl=PR(-0.5,-0.5,0.5);
   ctx.fillText('X: '+BVI_VARLBL[BVI.xvar], xl.x, xl.y+16);
   ctx.fillText('Y: '+BVI_VARLBL[BVI.yvar], yl.x, yl.y+16);
-  ctx.fillText('Z: '+(BVI.imode==='abs'?'绝对回报指数':'边际回报指数'), zl.x, zl.y-6);
+  ctx.fillText('Z: '+(bviMetricName()), zl.x, zl.y-6);
   ctx.textAlign='left';
   ctx.fillText('指数 '+zmin.toPrecision(3)+' ~ '+zmax.toPrecision(3), 8, 16);
   ctx.fillText('X '+xmin+' ~ '+xmax+'    Y '+ymin+' ~ '+ymax, 8, 32);
@@ -8211,9 +8244,9 @@ function bviDrawLine(cv){
     var px2=X(ax), py2=Y(ay); if(!on){ ctx.moveTo(px2,py2); on=true; } else ctx.lineTo(px2,py2); }
   ctx.stroke();
   ctx.fillStyle=colTx; ctx.font='12px sans-serif';
-  ctx.textAlign='center'; ctx.textBaseline='bottom'; ctx.fillText('X: '+BVI_VARLBL[kx], mL+pw/2, H-4);
+  ctx.textAlign='center'; ctx.textBaseline='bottom'; ctx.fillText('X: '+bviVLbl(kx), mL+pw/2, H-4);
   ctx.save(); ctx.translate(14,mT+ph/2); ctx.rotate(-Math.PI/2);
-  ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText('Y: '+BVI_VARLBL[ky],0,0); ctx.restore();
+  ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText('Y: '+bviVLbl(ky),0,0); ctx.restore();
 }
 function bviDrawHeat(cv){
   var ctx=cv.getContext('2d'); var dpr=window.devicePixelRatio||1;
@@ -8242,9 +8275,9 @@ function bviDrawHeat(cv){
   ctx.textAlign='center'; ctx.textBaseline='top';
   for(gi=0;gi<=4;gi++){ var xx=xmin+(xmax-xmin)*gi/4, px=mL+gi/4*pw; ctx.fillText(bviFmt(xx),px,H-mB+6); }
   ctx.font='12px sans-serif';
-  ctx.fillText('X: '+BVI_VARLBL[kx], mL+pw/2, H-18);
+  ctx.fillText('X: '+bviVLbl(kx), mL+pw/2, H-18);
   ctx.save(); ctx.translate(14,mT+ph/2); ctx.rotate(-Math.PI/2);
-  ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText('Y: '+BVI_VARLBL[ky],0,0); ctx.restore();
+  ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillText('Y: '+bviVLbl(ky),0,0); ctx.restore();
   var lx=W-mR+20, lw=14, lh=ph;
   for(i=0;i<lh;i++){ ctx.fillStyle=bviRamp(1-i/lh); ctx.fillRect(lx,mT+i,lw,1); }
   ctx.strokeStyle='rgba(128,128,128,.5)'; ctx.lineWidth=1; ctx.strokeRect(lx,mT,lw,lh);
@@ -8261,21 +8294,27 @@ function renderBVI(box) {
   // 卡片①：输入 + 时利/指数
   var c1 = cel('div', 'card');
   c1.appendChild(cel('h3', null, '建筑回报指数'));
-  c1.appendChild(cel('div', 'sub', '时利 π(L)=产量·(售价-原料成本)-工资；产量=基础产能·等级，工资=基础工资·(1+(等级-1)/170)。升级累计 S(a,b)=b(b-1)/2-a(a-1)/2，总成本=升级成本基数·S，总时间=升级时间基数·S。回报指数越大越好；算不出(没有正回报)的格子留空。'));
+  c1.appendChild(cel('div', 'sub', '时利 π(L)=产量·(售价-原料成本)-工资；产量=基础产能·等级，工资=基础工资·等级·(1+(等级-1+E)/170)（E=其他建筑等级，仅进管理费）。升级累计 S(a,b)=b(b-1)/2-a(a-1)/2，总成本=升级成本基数·S，总时间=升级时间基数·S。回报指数越大越好；算不出(没有正回报)的格子留空。'));
   c1.appendChild(cel('div', 'bvi-sl', '指数类型：'));
   var segm = cel('div', 'bviseg');
-  [['abs','绝对回报（从1级建到目标级）'],['marg','边际回报（初始级→目标级）']].forEach(function(o){
+  [['deng','等利（利润提升÷(管理费提升+每小时升级成本)）'],['sc1','综合降低率C1（平均相对降低率）'],['sc2','综合降低率C2（几何衰减率）']].forEach(function(o){
     var b=cel('button', BVI.imode===o[0]?'on':null, o[1]);
     b.onclick=function(){ BVI.imode=o[0]; bviSave(); bviReRender(); };
     segm.appendChild(b);
   });
   c1.appendChild(segm);
-  var ivPi = cel('div','v'); var ivIx = cel('div','v');
+  var _msub = { deng:'等利 = Δπ ÷ (Δ管理费 + 每小时升级成本)；每小时升级成本 = C总/T总 = C0/T0，从初始级 a 到目标级 b。', abs:'绝对 = π(目标级) ÷ (总成本 + π·总时间)，从 1 级起算（忽略初始级 a）。', marg:'边际 = Δπ ÷ (总成本 + Δπ·总时间)，从初始级 a 到目标级 b。', sc1:'综合降低率C1 = 各相邻单级等利的降低率 (d_L−d_{L+1})/d_L 的平均；从 a 到 b 逐级，等利转负即截断。越小越平衡。', sc2:'综合降低率C2 = 1−(末级等利/首级等利)^(1/步数)，平均每级缩水比例；从 a 到 b 逐级。越小越平衡。' };
+  c1.appendChild(cel('div','sub', _msub[BVI.imode] || _msub.deng));
+  var ivPi = cel('div','v'); var ivIx = cel('div','v'); var ivC1 = cel('div','v'); var ivC2 = cel('div','v');
   function updateKPI(){
-    var p1 = bviPi(1, BVI.W0, BVI.Q, BVI.m, BVI.P);
+    var p1 = bviPi(1, BVI.W0, BVI.Q, BVI.m, BVI.P, BVI.E);
     ivPi.textContent = isFinite(p1) ? p1.toFixed(2) : '—';
-    var ix = bviIndexVals({W0:BVI.W0,Q:BVI.Q,m:BVI.m,P:BVI.P,C0:BVI.C0,T0:BVI.T0,a:BVI.a,b:BVI.b});
+    var ix = bviIndexVals({W0:BVI.W0,Q:BVI.Q,m:BVI.m,P:BVI.P,C0:BVI.C0,T0:BVI.T0,a:BVI.a,b:BVI.b,E:BVI.E});
     ivIx.textContent = isFinite(ix) ? ix.toPrecision(4) : '—';
+    var s1 = bviDeclineScore(BVI.W0,BVI.Q,BVI.m,BVI.P,BVI.C0,BVI.T0,BVI.E,BVI.a,BVI.b,'sc1');
+    var s2 = bviDeclineScore(BVI.W0,BVI.Q,BVI.m,BVI.P,BVI.C0,BVI.T0,BVI.E,BVI.a,BVI.b,'sc2');
+    ivC1.textContent = isFinite(s1) ? (s1*100).toFixed(2)+'%' : '—';
+    ivC2.textContent = isFinite(s2) ? (s2*100).toFixed(2)+'%' : '—';
   }
   var grid = cel('div','fgrid');
   function fld(label, key){
@@ -8292,11 +8331,14 @@ function renderBVI(box) {
   grid.appendChild(fld('升级时间基数 T0','T0'));
   grid.appendChild(fld('初始等级 a（绝对模式忽略）','a'));
   grid.appendChild(fld('目标等级 b','b'));
+  grid.appendChild(fld('其他建筑等级 E（只进管理费）','E'));
   c1.appendChild(grid);
   var kk = cel('div','kpis');
   var kp1 = cel('div','kpi'); kp1.appendChild(cel('div','k','一级时利 π(1)')); kp1.appendChild(ivPi);
-  var kp2 = cel('div','kpi big acc'); kp2.appendChild(cel('div','k', BVI.imode==='abs'?'绝对回报指数':'边际回报指数')); kp2.appendChild(ivIx);
-  kk.appendChild(kp1); kk.appendChild(kp2); c1.appendChild(kk);
+  var kpc1 = cel('div','kpi'); kpc1.appendChild(cel('div','k','综合降低率C1')); kpc1.appendChild(ivC1);
+  var kpc2 = cel('div','kpi'); kpc2.appendChild(cel('div','k','综合降低率C2')); kpc2.appendChild(ivC2);
+  var kp2 = cel('div','kpi big acc'); kp2.appendChild(cel('div','k', bviMetricName())); kp2.appendChild(ivIx);
+  kk.appendChild(kp1); kk.appendChild(kpc1); kk.appendChild(kpc2); kk.appendChild(kp2); c1.appendChild(kk);
   updateKPI();
   box.appendChild(c1);
 
