@@ -1472,7 +1472,9 @@ var DATA = './data';
  */
 var SUP_ROOM = 'Supporter';
 var SUP_BASE = 'https://fiatjustitia093.github.io/simco-supporter/data';
-var SUP_DAYS = [];            // 朋友索引里属于 Supporter 的那些天（已打 _sup 标）
+var SUP_DAYS = [];            // 朋友索引里属于这些房间的那些天（已打 _sup 标）
+var SUP_ROOMS = ['Supporter', 'X'];   // 从朋友那边跨域拉取的房间：支持者 + 航天交易 X。想加别的房间往这里加 key（注意：你自己也在采的房间会以你本地那份为准）
+function isSupRoom(r) { return SUP_ROOMS.indexOf(r) >= 0; }
 
 /* ★★★ 频道横幅 —— 选中这里列出的房间时，顶部显示一条横幅（压缩消息区、可收起）。
  *     想改文字：改右边的字；想给别的房间也加横幅：按 房间key: '文字' 再写一行。
@@ -1496,12 +1498,12 @@ function mergeSup(idx) {
 function supIndexLoad() {
   return getJSON(SUP_BASE + '/index.json').then(function (ix) {
     SUP_DAYS = ((ix && ix.days) || [])
-      .filter(function (d) { return d.room === SUP_ROOM && (d.n || 0) > 0; })
+      .filter(function (d) { return isSupRoom(d.room) && (d.n || 0) > 0; })
       .map(function (d) { var e = {}; for (var k in d) e[k] = d[k]; e._sup = true; return e; });
     if (INDEX) {
       mergeSup(INDEX);
       renderSidebar();
-      if (sel.room === SUP_ROOM) renderFiles();
+      if (isSupRoom(sel.room)) renderFiles();
     }
     return supRecent();
   }).catch(function () { /* 他的站拿不到就当这个频道暂时没有，不影响本站 */ });
@@ -1512,12 +1514,12 @@ function supRecent() {
   return getPack(SUP_BASE + '/recent.json', false, '.gz').then(function (rec) {
     var added = 0;
     (((rec && rec.packs)) || []).forEach(function (p) {
-      if (p.room !== SUP_ROOM) return;
+      if (!isSupRoom(p.room)) return;
       added += addAll(expand(p));
       RECENT_ROOMS[p.room] = (p.rows || []).length;
     });
     if (INDEX) renderSidebar();
-    if (added && sel.room === SUP_ROOM) { renderFiles(); refresh(true); }
+    if (added && isSupRoom(sel.room)) { renderFiles(); refresh(true); }
   }).catch(function () { /* GitHub 上可能没有 recent，正常 */ });
 }
 
@@ -1534,7 +1536,7 @@ function supRecent() {
  *
  * 现在打开两个站看一眼侧栏底部，号对不上就是有一边没传。
  */
-var PAGE_BUILD = 'd68011a16684';
+var PAGE_BUILD = 'cd5d009ebe1f';
 
 // 头像只信这一个来源。别的地址一律画首字母圆圈，避免 logo 字段被拿来当追踪像素。
 var AVATAR_HOST = 'https://d1fxy698ilbz6u.cloudfront.net/';
